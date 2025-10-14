@@ -57,19 +57,3 @@ class StockValuationModel:
             valuations['P/B Ratio Method'] = target_book_value_per_share * competitor_avg_pb
         return valuations
 
-    def benjamin_graham_valuation(self, eps, g, Y):
-        """
-        Calculate intrinsic value using the revised Benjamin Graham formula.
-        V = (EPS * (8.5 + 2g) * 4.4) / Y
-        :param eps: Earnings per share for the last 12 months
-        :param g: Expected annual growth rate (e.g., input 15 for 15%)
-        :param Y: Current high-grade corporate bond yield (e.g., input 4.5 for 4.5%)
-        :return: Intrinsic value per share
-        """
-        if Y is None or Y == 0:
-            return None
-        # To prevent unrealistic valuations for ultra-high growth companies, 
-        # Graham suggests limiting the growth rate g
-        g = min(g, 20.0)  # Set growth rate cap at 20%
-        value = (eps * (8.5 + 2 * g) * 4.4) / Y
-        return value
