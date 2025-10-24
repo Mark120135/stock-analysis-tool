@@ -410,11 +410,14 @@ class StockAnalysisApp:
         except Exception as e:
             output += f"  - Relative valuation calculation error: {e}\n"
 
+            
+
+
         output += f"\n### Current Market Price ###\n  - {main_ticker} Current Stock Price: ${main_data['history']['Close'].iloc[-1]:.2f}\n"
         self.valuation_output.insert(tk.END, output)
 
     def _fetch_and_display_quantitative_analysis(self, main_ticker):
-        """Fetch and display quantitative analysis with industry comparison"""
+        """Fetch and display quantsitative analysis with industry comparison"""
         self.quantitative_text.delete(1.0, tk.END)
         
         if not INDUSTRY_ANALYZER_AVAILABLE:
