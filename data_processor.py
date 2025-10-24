@@ -114,3 +114,17 @@ class StockDataProcessor:
                 return balance_sheet_df.loc[key].sort_index(ascending=True)
         print(f"Warning: Stockholder equity items not found in balance sheet.")
         return pd.Series(dtype=float)
+
+    def get_ebitda(self, annual_income_stmt):
+        """
+        Extract EBITDA from income statement
+        """
+        if annual_income_stmt.empty:
+            return pd.Series(dtype=float)
+        
+        # EBITDA should be directly available in the income statement
+        if 'EBITDA' in annual_income_stmt.index:
+            return annual_income_stmt.loc['EBITDA'].sort_index(ascending=True)
+        else:
+            # Return empty series if not available
+            return pd.Series(dtype=float)

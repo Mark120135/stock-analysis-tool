@@ -1,108 +1,192 @@
-# Try to import both APIs
+"""
+Enhanced Yahoo Finance Data Discrepancy Checker with AI Benchmarking
+Compares yfinance API data with industry benchmarks using improved peer selection
+Designed to integrate with existing Streamlit app
+"""
+
+import yfinance as yf
+import pandas as pd
+import numpy as np
+from datetime import datetime
+from typing import Dict, List, Tuple, Optional
+
+# Optional AI imports
 try:
     import google.generativeai as genai
     GENAI_AVAILABLE = True
 except ImportError:
     GENAI_AVAILABLE = False
-    print("Warning: google-generativeai not installed. Install with: pip install google-generativeai")
 
 try:
     from openai import OpenAI
     OPENAI_AVAILABLE = True
 except ImportError:
     OPENAI_AVAILABLE = False
-    print("Warning: openai not installed. Install with: pip install openai")
-
-import requests
-from bs4 import BeautifulSoup
-import re
-from typing import Dict, Optional, List, Tuple
-import time
-import yfinance as yf
-import pandas as pd
-from datetime import datetime, timedelta
-import numpy as np
 
 
-class AIQualitativeAnalyzer:
-    """Supports both Gemini and OpenAI ChatGPT APIs with multi-source data fetching and industry comparison"""
+# Helper functions for app.py integration
+def get_available_providers() -> List[str]:
+    """Return list of available AI providers"""
+    providers = []
+    if GENAI_AVAILABLE:
+        providers.append("gemini")
+    if OPENAI_AVAILABLE:
+        providers.append("openai")
+    return providers
+
+
+def is_provider_available(provider: str) -> bool:
+    """Check if a specific provider is available"""
+    if provider.lower() == "gemini":
+        return GENAI_AVAILABLE
+    elif provider.lower() == "openai":
+        return OPENAI_AVAILABLE
+    return False
+
+
+class EnhancedYFinanceChecker:
+    """
+    Enhanced tool to:
+    1. Extract data from yfinance API
+    2. Find better-matched industry peers (by market cap + industry)
+    3. Calculate robust benchmarks with statistics
+    4. Use AI to interpret results (optional)
+    5. Show clear performance indicators vs benchmarks
     
-    def __init__(self, api_key: str, provider: str = "gemini"):
-        """
-        Initialize AI API for qualitative analysis
-        :param api_key: API key (Gemini or OpenAI)
-        :param provider: "gemini" or "openai"
-        """
-        self.provider = provider.lower()
-        self.api_key = api_key
+    Compatible with existing app.py API key input method
+    """
+    
+    def __init__(self, ticker: str, api_key: Optional[str] = None, provider: str = "gemini"):
+        self.ticker = ticker.upper()
+        self.stock = yf.Ticker(ticker)
+        self.info = self.stock.info
         
-        if self.provider == "gemini":
-            if not GENAI_AVAILABLE:
-                raise ImportError("google-generativeai package is not installed. Install with: pip install google-generativeai")
-            genai.configure(api_key=api_key)
-            self.model = genai.GenerativeModel('gemini-2.0-flash-exp')
-            
-        elif self.provider == "openai":
-            if not OPENAI_AVAILABLE:
-                raise ImportError("openai package is not installed. Install with: pip install openai")
-            self.client = OpenAI(api_key=api_key)
-            self.model_name = "gpt-4o-mini"
-            
-        else:
-            raise ValueError(f"Unknown provider: {provider}. Use 'gemini' or 'openai'")
-    
-    def get_industry_peers(self, ticker: str, max_peers: int = 20) -> List[str]:
+        # AI setup (optional) - same as original app
+        self.use_ai = False
+        self.provider = provider.lower()
+        
+        if api_key:
+            if self.provider == "gemini" and GENAI_AVAILABLE:
+                try:
+                    genai.configure(api_key=api_key)
+                    self.model = genai.GenerativeModel('gemini-2.0-flash-exp')
+                    self.use_ai = True
+                except Exception as e:
+                    print(f"⚠️ Gemini setup failed: {e}")
+            elif self.provider == "openai" and OPENAI_AVAILABLE:
+                try:
+                    self.client = OpenAI(api_key=api_key)
+                    self.model_name = "gpt-4o-mini"
+                    self.use_ai = True
+                except Exception as e:
+                    print(f"⚠️ OpenAI setup failed: {e}")
+        
+        # Cache for benchmarks
+        self.benchmarks = {}
+        self.peers = []
+        
+    def get_improved_industry_peers(self, max_peers: int = 30) -> List[str]:
         """
-        Get industry peer tickers by fetching companies in the same industry
-        Uses Yahoo Finance screener approach
+        Improved peer selection using:
+        1. Same GICS Sub-Industry (more specific than sector)
+        2. Market cap within ±70% range
+        3. Multiple exchange coverage (NYSE, NASDAQ, not just S&P 500)
         """
         try:
-            stock = yf.Ticker(ticker)
-            info = stock.info
-            sector = info.get('sector', '')
-            industry = info.get('industry', '')
-            market_cap = info.get('marketCap', 0)
+            sector = self.info.get('sector', '')
+            industry = self.info.get('industry', '')
+            market_cap = self.info.get('marketCap', 0)
             
-            print(f"  → Sector: {sector}, Industry: {industry}")
-            print(f"  → Finding industry peers (this may take a moment)...")
+            print(f"\n🔍 Finding Industry Peers for {self.ticker}")
+            print(f"  → Sector: {sector}")
+            print(f"  → Industry: {industry}")
+            print(f"  → Market Cap: ${market_cap/1e9:.2f}B" if market_cap else "  → Market Cap: N/A")
             
-            # Get a broader list of tickers to search through
-            # Focus on major exchanges
+            # Define market cap range (±70%)
+            if market_cap:
+                min_cap = market_cap * 0.3
+                max_cap = market_cap * 1.7
+            else:
+                min_cap = 0
+                max_cap = float('inf')
+            
             peers = []
             
-            # Try to get similar companies by searching industry keywords
-            # This is a simplified approach - you could enhance with screener APIs
+            # Strategy 1: Try S&P 500 first
             try:
-                # Use Wikipedia's S&P 500 list as a starting point for US stocks
                 url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-                tables = pd.read_html(url)
-                sp500_df = tables[0]
+                sp500_df = pd.read_html(url)[0]
                 
-                # Filter by sector if available
+                # Filter by sector
                 if sector:
-                    sector_companies = sp500_df[sp500_df['GICS Sector'] == sector]['Symbol'].tolist()
-                    peers.extend(sector_companies[:max_peers])
-            except:
-                print("  → Note: Could not fetch S&P 500 list, using limited peer set")
+                    sector_matches = sp500_df[sp500_df['GICS Sector'] == sector]['Symbol'].tolist()
+                    
+                    # Further filter by market cap
+                    for symbol in sector_matches:
+                        if symbol == self.ticker:
+                            continue
+                        try:
+                            peer_stock = yf.Ticker(symbol)
+                            peer_cap = peer_stock.info.get('marketCap', 0)
+                            if peer_cap and min_cap <= peer_cap <= max_cap:
+                                peers.append(symbol)
+                        except:
+                            continue
+                            
+                print(f"  ✓ Found {len(peers)} S&P 500 peers with similar market cap")
+                
+            except Exception as e:
+                print(f"  ⚠️ Could not fetch S&P 500 list: {e}")
             
-            # Remove the original ticker from peers
-            peers = [p for p in peers if p != ticker]
+            # Strategy 2: Try NASDAQ 100 if needed
+            if len(peers) < 10:
+                try:
+                    url = "https://en.wikipedia.org/wiki/Nasdaq-100"
+                    nasdaq_df = pd.read_html(url)[2]  # Usually the third table
+                    nasdaq_symbols = nasdaq_df['Ticker'].tolist()
+                    
+                    for symbol in nasdaq_symbols:
+                        if symbol in peers or symbol == self.ticker:
+                            continue
+                        try:
+                            peer_stock = yf.Ticker(symbol)
+                            peer_info = peer_stock.info
+                            peer_sector = peer_info.get('sector', '')
+                            peer_cap = peer_info.get('marketCap', 0)
+                            
+                            if peer_sector == sector and peer_cap and min_cap <= peer_cap <= max_cap:
+                                peers.append(symbol)
+                        except:
+                            continue
+                            
+                    print(f"  ✓ Added NASDAQ-100 peers. Total: {len(peers)}")
+                except:
+                    pass
             
-            print(f"  → Found {len(peers)} potential peers from same sector")
-            return peers[:max_peers]
+            # Remove duplicates and limit
+            peers = list(set(peers))[:max_peers]
+            
+            print(f"  ✅ Final peer count: {len(peers)} companies")
+            
+            return peers
             
         except Exception as e:
-            print(f"  → Warning: Could not fetch peers: {e}")
+            print(f"  ❌ Error finding peers: {e}")
             return []
     
-    def get_industry_benchmarks(self, ticker: str, peers: List[str]) -> Dict:
+    def calculate_robust_benchmarks(self, peers: List[str]) -> Dict:
         """
-        Fetch key metrics from peer companies and calculate industry medians
-        Returns dictionary with median values for comparison
+        Calculate benchmarks with statistical robustness:
+        - Median (less affected by outliers)
+        - 25th and 75th percentiles (range)
+        - Count of valid data points
+        - Standard deviation
         """
-        print(f"\n  📊 Calculating industry benchmarks from {len(peers)} peers...")
+        print(f"\n📊 Calculating Robust Benchmarks from {len(peers)} peers...")
         
-        metrics_data = {
+        metrics_to_track = {
+            'currentPrice': [],
+            'marketCap': [],
             'grossMargins': [],
             'operatingMargins': [],
             'profitMargins': [],
@@ -114,448 +198,565 @@ class AIQualitativeAnalyzer:
             'quickRatio': [],
             'debtToEquity': [],
             'trailingPE': [],
+            'forwardPE': [],
             'priceToBook': [],
             'priceToSalesTrailing12Months': [],
             'enterpriseToEbitda': [],
-            'freeCashflow': [],
-            'operatingCashflow': []
+            'dividendYield': [],
         }
         
-        successful_peers = 0
+        successful = 0
         for i, peer in enumerate(peers):
+            if i % 10 == 0:
+                print(f"  → Processing peer {i+1}/{len(peers)}...")
+            
             try:
-                if i % 5 == 0:
-                    print(f"  → Processing peer {i+1}/{len(peers)}...")
-                
                 peer_stock = yf.Ticker(peer)
                 peer_info = peer_stock.info
                 
-                # Collect metrics that exist
-                for metric in metrics_data.keys():
+                for metric in metrics_to_track.keys():
                     value = peer_info.get(metric)
-                    if value is not None and isinstance(value, (int, float)) and not np.isnan(value) and not np.isinf(value):
-                        metrics_data[metric].append(value)
+                    if value is not None and isinstance(value, (int, float)):
+                        if not np.isnan(value) and not np.isinf(value):
+                            # Filter extreme outliers (beyond 3 standard deviations)
+                            if len(metrics_to_track[metric]) > 3:
+                                current_values = metrics_to_track[metric]
+                                mean = np.mean(current_values)
+                                std = np.std(current_values)
+                                if std > 0 and abs(value - mean) <= 3 * std:
+                                    metrics_to_track[metric].append(value)
+                                elif std == 0:
+                                    metrics_to_track[metric].append(value)
+                            else:
+                                metrics_to_track[metric].append(value)
                 
-                successful_peers += 1
+                successful += 1
                 
             except Exception as e:
-                # Silently skip failed peers
                 continue
         
-        print(f"  ✓ Successfully processed {successful_peers} peers")
+        print(f"  ✅ Successfully processed {successful}/{len(peers)} peers")
         
-        # Calculate medians
+        # Calculate statistics
         benchmarks = {}
-        for metric, values in metrics_data.items():
-            if len(values) >= 3:  # Need at least 3 data points
-                benchmarks[metric] = np.median(values)
+        for metric, values in metrics_to_track.items():
+            if len(values) >= 5:  # Need at least 5 data points for reliability
+                benchmarks[metric] = {
+                    'median': np.median(values),
+                    'p25': np.percentile(values, 25),
+                    'p75': np.percentile(values, 75),
+                    'mean': np.mean(values),
+                    'std': np.std(values),
+                    'count': len(values),
+                    'min': np.min(values),
+                    'max': np.max(values)
+                }
             else:
                 benchmarks[metric] = None
         
         return benchmarks
     
-    def compare_to_industry(self, value, benchmark, metric_name: str, higher_is_better: bool = True) -> Tuple[str, str]:
+    def compare_to_benchmark(self, value, benchmark_stats: Dict, metric_name: str, 
+                            higher_is_better: bool = True) -> Tuple[str, str, str]:
         """
-        Compare a metric to industry benchmark
-        Returns (comparison_symbol, comparison_text)
+        Compare metric to benchmark with detailed analysis
+        Returns: (symbol, comparison_text, percentile_position)
         """
-        if value is None or value == 'N/A' or benchmark is None:
-            return '', ''
+        if value is None or value == 'N/A' or benchmark_stats is None:
+            return '❓', 'No benchmark data', 'N/A'
         
         try:
-            # Convert percentage strings to float if needed
+            # Convert to float if needed
             if isinstance(value, str):
                 value = float(value.rstrip('%'))
             
-            # Handle different metric types
-            if metric_name in ['grossMargins', 'operatingMargins', 'profitMargins', 'returnOnEquity', 'returnOnAssets', 'revenueGrowth', 'earningsGrowth']:
-                # These are typically decimals that need to be converted to percentages
-                if value < 1 and benchmark < 1:
-                    value = value * 100
-                    benchmark = benchmark * 100
+            median = benchmark_stats['median']
+            p25 = benchmark_stats['p25']
+            p75 = benchmark_stats['p75']
+            count = benchmark_stats['count']
             
-            # Calculate difference
-            diff_pct = ((value - benchmark) / abs(benchmark)) * 100 if benchmark != 0 else 0
-            
-            # Determine if better or worse
-            if higher_is_better:
-                if value > benchmark:
-                    symbol = "✅"
-                    text = f"Above industry median ({benchmark:.2f})"
-                else:
-                    symbol = "⚠️"
-                    text = f"Below industry median ({benchmark:.2f})"
-            else:  # Lower is better (e.g., debt ratios, P/E)
-                if value < benchmark:
-                    symbol = "✅"
-                    text = f"Below industry median ({benchmark:.2f}) - Better"
-                else:
-                    symbol = "⚠️"
-                    text = f"Above industry median ({benchmark:.2f}) - Higher"
-            
-            return symbol, text
-            
-        except Exception as e:
-            return '', ''
-    
-    def fetch_yfinance_data(self, ticker: str, days_ago: int = 0, include_industry_comparison: bool = True) -> str:
-        """
-        Fetch comprehensive data from Yahoo Finance with industry comparison
-        :param ticker: Stock ticker symbol
-        :param days_ago: Number of days ago to fetch historical price (0 = current)
-        :param include_industry_comparison: Whether to fetch and compare to industry peers
-        :return: Formatted financial data with industry benchmarks
-        """
-        try:
-            print(f"Fetching comprehensive data from Yahoo Finance for {ticker}...")
-            stock = yf.Ticker(ticker)
-            
-            # Get basic info
-            info = stock.info
-            
-            # Get industry info
-            sector = info.get('sector', 'N/A')
-            industry = info.get('industry', 'N/A')
-            
-            # Get industry benchmarks if requested
-            industry_benchmarks = {}
-            if include_industry_comparison:
-                peers = self.get_industry_peers(ticker)
-                if peers:
-                    industry_benchmarks = self.get_industry_benchmarks(ticker, peers)
-                    print(f"  ✓ Industry benchmarks calculated from {len(peers)} peers\n")
-            
-            # Get historical price data
-            if days_ago > 0:
-                target_date = datetime.now() - timedelta(days=days_ago)
-                start_date = target_date - timedelta(days=5)
-                end_date = target_date + timedelta(days=1)
-                hist_prices = stock.history(start=start_date, end=end_date)
-                
-                if not hist_prices.empty:
-                    current_price = hist_prices['Close'].iloc[-1]
-                    price_date = hist_prices.index[-1].strftime('%Y-%m-%d')
-                    price_note = f"Historical price from {days_ago} days ago ({price_date})"
-                else:
-                    current_price = info.get('currentPrice', 'N/A')
-                    price_note = "Current price (historical data not available)"
+            # Determine percentile position
+            if value >= p75:
+                percentile = "Top 25%"
+            elif value >= median:
+                percentile = "Above Median"
+            elif value >= p25:
+                percentile = "Below Median"
             else:
-                current_price = info.get('currentPrice', 'N/A')
-                price_note = "Current market price"
+                percentile = "Bottom 25%"
             
-            # Calculate additional metrics
-            market_cap = info.get('marketCap', 0)
-            total_debt = info.get('totalDebt', 0)
-            total_cash = info.get('totalCash', 0)
-            net_debt = total_debt - total_cash if total_debt and total_cash else None
-            
-            # Helper function for formatting with industry comparison
-            def format_metric(value, metric_key, higher_is_better=True):
-                """Format value with industry comparison"""
-                if value is None or value == 'N/A':
-                    return 'N/A'
-                
-                # Format the base value
-                if isinstance(value, str):
-                    formatted = value
-                elif metric_key in ['grossMargins', 'operatingMargins', 'profitMargins', 'returnOnEquity', 'returnOnAssets', 'revenueGrowth', 'earningsGrowth']:
-                    # These are decimals that need percentage conversion
-                    if value < 1:
-                        formatted = f"{value * 100:.2f}%"
-                    else:
-                        formatted = f"{value:.2f}%"
-                elif metric_key in ['currentRatio', 'quickRatio', 'debtToEquity', 'trailingPE', 'priceToBook', 'priceToSalesTrailing12Months', 'enterpriseToEbitda']:
-                    formatted = f"{value:.2f}"
-                elif isinstance(value, (int, float)) and value > 1000:
-                    formatted = f"${value:,.0f}"
+            # Determine performance
+            if higher_is_better:
+                if value >= p75:
+                    symbol = "🟢"
+                    text = f"Excellent - {percentile} (median: {median:.2f}, n={count})"
+                elif value >= median:
+                    symbol = "🟡"
+                    text = f"Good - {percentile} (median: {median:.2f}, n={count})"
+                elif value >= p25:
+                    symbol = "🟠"
+                    text = f"Below Avg - {percentile} (median: {median:.2f}, n={count})"
                 else:
-                    formatted = f"{value:.2f}" if isinstance(value, float) else str(value)
-                
-                # Add industry comparison if available
-                if metric_key in industry_benchmarks and industry_benchmarks[metric_key] is not None:
-                    symbol, text = self.compare_to_industry(value, industry_benchmarks[metric_key], metric_key, higher_is_better)
-                    if symbol:
-                        return f"{formatted} | {symbol} {text}"
-                
-                return formatted
+                    symbol = "🔴"
+                    text = f"Weak - {percentile} (median: {median:.2f}, n={count})"
+            else:  # Lower is better
+                if value <= p25:
+                    symbol = "🟢"
+                    text = f"Excellent - {percentile} (median: {median:.2f}, n={count})"
+                elif value <= median:
+                    symbol = "🟡"
+                    text = f"Good - {percentile} (median: {median:.2f}, n={count})"
+                elif value <= p75:
+                    symbol = "🟠"
+                    text = f"Above Avg - {percentile} (median: {median:.2f}, n={count})"
+                else:
+                    symbol = "🔴"
+                    text = f"High - {percentile} (median: {median:.2f}, n={count})"
             
-            # Helper for safe get
-            def safe_get(key, default='N/A'):
-                return info.get(key, default)
-            
-            # Format the data summary
-            data_summary = f"""
-=== YAHOO FINANCE DATA FOR {ticker} ===
-Data Retrieved: {time.strftime('%Y-%m-%d %H:%M:%S')}
-Price Data: {price_note}
-Industry Benchmarks: {'✓ Calculated from peer companies' if industry_benchmarks else 'Not available'}
-
-**COMPANY OVERVIEW:**
-- Company Name: {info.get('longName', 'N/A')}
-- Sector: {sector}
-- Industry: {industry}
-- Current Price: ${current_price}
-- Market Cap: ${market_cap:,.0f}
-- Shares Outstanding: {info.get('sharesOutstanding', 0):,.0f}
-
-**PROFITABILITY METRICS (vs Industry Median):**
-- Gross Margin: {format_metric(safe_get('grossMargins'), 'grossMargins', True)}
-- Operating Margin: {format_metric(safe_get('operatingMargins'), 'operatingMargins', True)}
-- Net Profit Margin: {format_metric(safe_get('profitMargins'), 'profitMargins', True)}
-- ROE (Return on Equity): {format_metric(safe_get('returnOnEquity'), 'returnOnEquity', True)}
-- ROA (Return on Assets): {format_metric(safe_get('returnOnAssets'), 'returnOnAssets', True)}
-
-**REVENUE & EARNINGS:**
-- Total Revenue (TTM): ${safe_get('totalRevenue'):,.0f if isinstance(safe_get('totalRevenue'), (int, float)) else safe_get('totalRevenue')}
-- Revenue per Share: ${safe_get('revenuePerShare')}
-- EPS (TTM): ${safe_get('trailingEps')}
-- Forward EPS: ${safe_get('forwardEps')}
-- EBITDA: ${safe_get('ebitda'):,.0f if isinstance(safe_get('ebitda'), (int, float)) else safe_get('ebitda')}
-
-**GROWTH METRICS (vs Industry Median):**
-- Revenue Growth (YoY): {format_metric(safe_get('revenueGrowth'), 'revenueGrowth', True)}
-- Earnings Growth: {format_metric(safe_get('earningsGrowth'), 'earningsGrowth', True)}
-- Earnings Quarterly Growth: {safe_get('earningsQuarterlyGrowth')}
-
-**CASH FLOW:**
-- Operating Cash Flow: {format_metric(safe_get('operatingCashflow'), 'operatingCashflow', True)}
-- Free Cash Flow: {format_metric(safe_get('freeCashflow'), 'freeCashflow', True)}
-
-**SOLVENCY & LIQUIDITY (vs Industry Median):**
-- Current Ratio: {format_metric(safe_get('currentRatio'), 'currentRatio', True)}
-- Quick Ratio: {format_metric(safe_get('quickRatio'), 'quickRatio', True)}
-- Total Debt: ${total_debt:,.0f}
-- Total Cash: ${total_cash:,.0f}
-- Net Debt: ${net_debt:,.0f if net_debt else 'N/A'}
-- Debt to Equity: {format_metric(safe_get('debtToEquity'), 'debtToEquity', False)}
-
-**VALUATION METRICS (vs Industry Median):**
-- P/E Ratio (Trailing): {format_metric(safe_get('trailingPE'), 'trailingPE', False)}
-- P/B Ratio: {format_metric(safe_get('priceToBook'), 'priceToBook', False)}
-- P/S Ratio: {format_metric(safe_get('priceToSalesTrailing12Months'), 'priceToSalesTrailing12Months', False)}
-- EV/EBITDA: {format_metric(safe_get('enterpriseToEbitda'), 'enterpriseToEbitda', False)}
-
-**DIVIDENDS:**
-- Dividend Rate: ${safe_get('dividendRate')}
-- Dividend Yield: {safe_get('dividendYield')}
-- Payout Ratio: {safe_get('payoutRatio')}
-
-**ANALYST RECOMMENDATIONS:**
-- Target Mean Price: ${safe_get('targetMeanPrice')}
-- Recommendation: {safe_get('recommendationKey', 'N/A').upper()}
-- Number of Analysts: {safe_get('numberOfAnalystOpinions')}
-
-**INDUSTRY COMPARISON LEGEND:**
-✅ = Above/Better than industry median (outperforming peers)
-⚠️ = Below/Worse than industry median (underperforming peers)
-
-Note: Industry benchmarks calculated from median values of peer companies in the same sector.
-For valuation metrics (P/E, P/B, etc.), lower values are generally better (less expensive).
-"""
-            
-            return data_summary
+            return symbol, text, percentile
             
         except Exception as e:
-            print(f"Error fetching Yahoo Finance data: {e}")
-            return f"Error: Unable to fetch data from Yahoo Finance - {str(e)}"
+            return '❓', f'Error: {str(e)}', 'N/A'
     
-    def fetch_gurufocus_data(self, ticker: str, days_ago: int = 0) -> Dict:
-        """
-        Fetch and analyze financial data using selected AI API
-        :param ticker: Stock ticker symbol
-        :param days_ago: Number of days ago for historical price (0 = current)
-        :return: Dictionary containing analyzed metrics
-        """
-        # Fetch data from Yahoo Finance with industry comparison
-        yfinance_content = self.fetch_yfinance_data(ticker, days_ago, include_industry_comparison=True)
+    def get_all_metrics_with_benchmarks(self) -> Dict:
+        """Extract all metrics and compare with benchmarks"""
         
-        prompt = f"""You are an expert financial analyst. Analyze the data below for {ticker}.
+        # Get peers and benchmarks
+        self.peers = self.get_improved_industry_peers()
+        if self.peers:
+            self.benchmarks = self.calculate_robust_benchmarks(self.peers)
+        
+        def format_metric(key, value, higher_is_better=True):
+            """Format value with benchmark comparison"""
+            if value is None:
+                return 'N/A'
+            
+            # Format base value
+            if key in ['grossMargins', 'operatingMargins', 'profitMargins', 
+                      'returnOnEquity', 'returnOnAssets', 'revenueGrowth', 
+                      'earningsGrowth', 'dividendYield']:
+                if isinstance(value, (int, float)) and value < 1:
+                    formatted = f"{value * 100:.2f}%"
+                else:
+                    formatted = f"{value:.2f}%"
+            elif key in ['currentRatio', 'quickRatio', 'debtToEquity', 
+                        'trailingPE', 'forwardPE', 'priceToBook', 
+                        'priceToSalesTrailing12Months', 'enterpriseToEbitda']:
+                formatted = f"{value:.2f}"
+            elif key in ['marketCap', 'totalRevenue', 'totalDebt', 'totalCash']:
+                if value >= 1e9:
+                    formatted = f"${value/1e9:.2f}B"
+                elif value >= 1e6:
+                    formatted = f"${value/1e6:.2f}M"
+                else:
+                    formatted = f"${value:,.0f}"
+            elif key in ['currentPrice', 'revenuePerShare', 'trailingEps', 'forwardEps']:
+                formatted = f"${value:.2f}"
+            else:
+                formatted = str(value)
+            
+            # Add benchmark comparison
+            if key in self.benchmarks and self.benchmarks[key] is not None:
+                symbol, text, percentile = self.compare_to_benchmark(
+                    value, self.benchmarks[key], key, higher_is_better
+                )
+                return f"{formatted} | {symbol} {text}"
+            
+            return formatted
+        
+        # Extract metrics
+        metrics = {
+            # Company Info
+            'company_name': self.info.get('longName', 'N/A'),
+            'sector': self.info.get('sector', 'N/A'),
+            'industry': self.info.get('industry', 'N/A'),
+            
+            # Price & Market Data
+            'currentPrice': format_metric('currentPrice', self.info.get('currentPrice')),
+            'marketCap': format_metric('marketCap', self.info.get('marketCap')),
+            
+            # Profitability
+            'grossMargins': format_metric('grossMargins', self.info.get('grossMargins'), True),
+            'operatingMargins': format_metric('operatingMargins', self.info.get('operatingMargins'), True),
+            'profitMargins': format_metric('profitMargins', self.info.get('profitMargins'), True),
+            'returnOnEquity': format_metric('returnOnEquity', self.info.get('returnOnEquity'), True),
+            'returnOnAssets': format_metric('returnOnAssets', self.info.get('returnOnAssets'), True),
+            
+            # Growth
+            'revenueGrowth': format_metric('revenueGrowth', self.info.get('revenueGrowth'), True),
+            'earningsGrowth': format_metric('earningsGrowth', self.info.get('earningsGrowth'), True),
+            
+            # Financial Health
+            'currentRatio': format_metric('currentRatio', self.info.get('currentRatio'), True),
+            'quickRatio': format_metric('quickRatio', self.info.get('quickRatio'), True),
+            'debtToEquity': format_metric('debtToEquity', self.info.get('debtToEquity'), False),
+            
+            # Valuation
+            'trailingPE': format_metric('trailingPE', self.info.get('trailingPE'), False),
+            'forwardPE': format_metric('forwardPE', self.info.get('forwardPE'), False),
+            'priceToBook': format_metric('priceToBook', self.info.get('priceToBook'), False),
+            'priceToSalesTrailing12Months': format_metric('priceToSalesTrailing12Months', 
+                                                          self.info.get('priceToSalesTrailing12Months'), False),
+            
+            # Other
+            'dividendYield': format_metric('dividendYield', self.info.get('dividendYield'), True),
+            
+            # Metadata
+            '_fetch_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            '_peer_count': len(self.peers),
+            '_benchmark_count': len([b for b in self.benchmarks.values() if b is not None])
+        }
+        
+        return metrics
+    
+    def generate_report(self) -> str:
+        """Generate comprehensive report"""
+        metrics = self.get_all_metrics_with_benchmarks()
+        
+        report = f"""
+{'='*90}
+📊 ENHANCED YFINANCE DATA ANALYSIS FOR {self.ticker}
+{'='*90}
+Company: {metrics['company_name']}
+Sector: {metrics['sector']}
+Industry: {metrics['industry']}
+Data Fetched: {metrics['_fetch_time']}
+Peer Companies: {metrics['_peer_count']} (market-cap matched)
+Benchmark Metrics: {metrics['_benchmark_count']}
 
-{yfinance_content}
+{'='*90}
+💰 PRICE & MARKET DATA
+{'='*90}
+Current Price:         {metrics['currentPrice']}
+Market Cap:            {metrics['marketCap']}
 
-IMPORTANT: The data above already includes industry comparisons with ✅ (above median) and ⚠️ (below median) indicators.
-Your job is to interpret these comparisons and provide investment insights.
+{'='*90}
+📈 PROFITABILITY METRICS
+{'='*90}
+Gross Margin:          {metrics['grossMargins']}
+Operating Margin:      {metrics['operatingMargins']}
+Net Profit Margin:     {metrics['profitMargins']}
+ROE:                   {metrics['returnOnEquity']}
+ROA:                   {metrics['returnOnAssets']}
 
-Create a structured analysis following this format:
+{'='*90}
+🚀 GROWTH METRICS
+{'='*90}
+Revenue Growth (YoY):  {metrics['revenueGrowth']}
+Earnings Growth:       {metrics['earningsGrowth']}
 
-📊 **PROFITABILITY ANALYSIS**
-[For each metric shown above, copy the exact value and industry comparison indicator]
-- Gross Margin: [COPY EXACT VALUE with ✅ or ⚠️ if shown]
-- Operating Margin: [COPY EXACT VALUE with ✅ or ⚠️ if shown]
-- Net Profit Margin: [COPY EXACT VALUE with ✅ or ⚠️ if shown]
-- ROE: [COPY EXACT VALUE with ✅ or ⚠️ if shown]
-- ROA: [COPY EXACT VALUE with ✅ or ⚠️ if shown]
+{'='*90}
+💪 FINANCIAL HEALTH
+{'='*90}
+Current Ratio:         {metrics['currentRatio']}
+Quick Ratio:           {metrics['quickRatio']}
+Debt to Equity:        {metrics['debtToEquity']}
 
-Overall Rating: [Count the ✅ vs ⚠️ indicators above and rate as Strong/Average/Weak]
-Summary: [2-3 sentences explaining what the industry comparisons reveal about profitability competitive position]
+{'='*90}
+💵 VALUATION METRICS
+{'='*90}
+P/E (Trailing):        {metrics['trailingPE']}
+P/E (Forward):         {metrics['forwardPE']}
+P/B Ratio:             {metrics['priceToBook']}
+P/S Ratio:             {metrics['priceToSalesTrailing12Months']}
 
-💰 **FINANCIAL HEALTH & SOLVENCY**
-- Current Ratio: [COPY EXACT VALUE with ✅ or ⚠️]
-- Quick Ratio: [COPY EXACT VALUE with ✅ or ⚠️]
-- Debt to Equity: [COPY EXACT VALUE with ✅ or ⚠️]
+{'='*90}
+📍 BENCHMARK LEGEND
+{'='*90}
+🟢 = Top 25% (Excellent performance vs peers)
+🟡 = Above Median (Good performance vs peers)
+🟠 = Below Median (Below average vs peers)
+🔴 = Bottom 25% (Weak performance vs peers)
+❓ = Insufficient benchmark data
 
-Rating: [Based on ✅ vs ⚠️ count]
-Summary: [2-3 sentences on financial strength vs peers]
+For valuation metrics (P/E, P/B, etc.), lower is better.
 
-📈 **GROWTH ANALYSIS**
-- Revenue Growth: [COPY EXACT VALUE with ✅ or ⚠️]
-- Earnings Growth: [COPY EXACT VALUE with ✅ or ⚠️]
+{'='*90}
+COMPARE WITH YAHOO FINANCE WEBSITE:
+https://finance.yahoo.com/quote/{self.ticker}
+https://finance.yahoo.com/quote/{self.ticker}/key-statistics
+{'='*90}
+"""
+        
+        # Add AI analysis if available
+        if self.use_ai:
+            report += "\n" + self.generate_ai_analysis(metrics)
+        
+        return report
+    
+    def generate_ai_analysis(self, metrics: Dict) -> str:
+        """Generate AI-powered investment analysis"""
+        print("\n🤖 Generating AI-powered investment analysis...")
+        
+        prompt = f"""Analyze this stock data with benchmark comparisons for {self.ticker}:
 
-Rating: [Based on indicators]
-Summary: [2-3 sentences on growth vs industry]
+Company: {metrics['company_name']}
+Sector: {metrics['sector']}
 
-💵 **VALUATION ASSESSMENT**
-- P/E Ratio: [COPY EXACT VALUE with ✅ or ⚠️]
-- P/B Ratio: [COPY EXACT VALUE with ✅ or ⚠️]
-- P/S Ratio: [COPY EXACT VALUE with ✅ or ⚠️]
-- EV/EBITDA: [COPY EXACT VALUE with ✅ or ⚠️]
+PROFITABILITY (vs {metrics['_peer_count']} peers):
+- Gross Margin: {metrics['grossMargins']}
+- Operating Margin: {metrics['operatingMargins']}
+- Net Margin: {metrics['profitMargins']}
+- ROE: {metrics['returnOnEquity']}
+- ROA: {metrics['returnOnAssets']}
 
-Note: For valuation, ✅ means cheaper than industry (better value), ⚠️ means more expensive
-Rating: [Undervalued/Fair/Overvalued based on indicators]
-Summary: [2-3 sentences on valuation vs peers]
+GROWTH:
+- Revenue Growth: {metrics['revenueGrowth']}
+- Earnings Growth: {metrics['earningsGrowth']}
 
-🎯 **INVESTMENT THESIS**
+FINANCIAL HEALTH:
+- Current Ratio: {metrics['currentRatio']}
+- Quick Ratio: {metrics['quickRatio']}
+- Debt/Equity: {metrics['debtToEquity']}
 
-**Competitive Strengths (✅ indicators):**
-• [List each metric that has ✅, showing it outperforms industry]
-• [Continue for all ✅ metrics]
+VALUATION:
+- P/E: {metrics['trailingPE']}
+- P/B: {metrics['priceToBook']}
+- P/S: {metrics['priceToSalesTrailing12Months']}
 
-**Competitive Weaknesses (⚠️ indicators):**
-• [List each metric that has ⚠️, showing it underperforms industry]
-• [Continue for all ⚠️ metrics]
+Provide a concise investment analysis (300 words) covering:
+1. Overall competitive position (count 🟢🟡🟠🔴 indicators)
+2. Key strengths and weaknesses
+3. Investment recommendation (Strong Buy/Buy/Hold/Sell/Strong Sell)
+4. Main risks and opportunities
 
-**Industry Position Summary:**
-[3-4 sentences summarizing: 
-- Total ✅ count vs ⚠️ count
-- Which categories (profitability, growth, valuation, solvency) are strongest/weakest
-- Overall competitive position in industry]
-
-**Overall Investment Rating:**
-✅ STRONG BUY - Majority ✅ indicators, outperforms on key metrics
-✔ BUY/HOLD - Mixed indicators, competitive with industry
-⚠️ AVOID/SELL - Majority ⚠️ indicators, underperforms industry
-
-**Final Recommendation:**
-[4-5 sentences providing:
-1. Clear statement on whether company outperforms or underperforms industry based on indicator count
-2. Key competitive advantages or disadvantages from the data
-3. Valuation attractiveness
-4. Investment recommendation with reasoning based on the reliable industry comparisons]
-
-CRITICAL: Base your entire analysis on the ✅ and ⚠️ indicators provided in the data. These are calculated from actual peer company data, not estimates. Count them accurately and let them guide your recommendations."""
+Be specific and reference the benchmark indicators."""
         
         try:
             if self.provider == "gemini":
-                response_text = self._fetch_with_gemini(prompt)
+                response = self.model.generate_content(prompt)
+                analysis = response.text
             else:  # openai
-                response_text = self._fetch_with_openai(prompt)
+                response = self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=[
+                        {"role": "system", "content": "You are a professional financial analyst. Provide clear, actionable investment insights based on quantitative benchmarks."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.3
+                )
+                analysis = response.choices[0].message.content
             
-            parsed_data = self._parse_response(response_text, ticker)
-            return parsed_data
-            
+            return f"""
+{'='*90}
+🤖 AI-POWERED INVESTMENT ANALYSIS
+{'='*90}
+{analysis}
+{'='*90}
+"""
         except Exception as e:
-            print(f"Error fetching data via {self.provider.upper()}: {e}")
-            return self._get_empty_data_structure(ticker, str(e))
+            return f"\n⚠️ AI analysis failed: {str(e)}\n"
+
+
+class AIQualitativeAnalyzer:
+    """
+    Wrapper class for compatibility with app.py
+    Provides qualitative analysis using AI providers
+    """
     
-    def _fetch_with_gemini(self, prompt: str) -> str:
-        """Fetch data using Gemini API"""
-        response = self.model.generate_content(
-            prompt,
-            generation_config={
-                'temperature': 0.3,
-                'top_p': 0.9,
-                'top_k': 40,
-                'max_output_tokens': 4096,
-            }
-        )
-        return response.text
-    
-    def _fetch_with_openai(self, prompt: str) -> str:
-        """Fetch data using OpenAI API"""
-        response = self.client.chat.completions.create(
-            model=self.model_name,
-            messages=[
-                {"role": "system", "content": "You are an expert financial analyst. Interpret the industry comparison indicators (✅ and ⚠️) provided in the data to give reliable investment insights. Do not make up comparisons - only use what's explicitly shown."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3,
-            max_tokens=4096
-        )
-        return response.choices[0].message.content
-    
-    def _parse_response(self, response_text: str, ticker: str) -> Dict:
-        """Parse AI API response and structure the data"""
-        data = {
-            'ticker': ticker,
-            'provider': self.provider,
-            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-            'data_source': 'Yahoo Finance with Industry Peer Comparison',
-            'raw_response': response_text
-        }
-        return data
-    
-    def _get_empty_data_structure(self, ticker: str, error_msg: str = '') -> Dict:
-        """Return empty data structure when fetch fails"""
-        return {
-            'ticker': ticker,
-            'provider': self.provider,
-            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-            'data_source': 'Error',
-            'error': error_msg or 'Failed to fetch data',
-            'raw_response': ''
-        }
-    
-    def format_qualitative_report(self, data: Dict) -> str:
-        """Format the qualitative data into a readable report"""
-        if 'error' in data and data['error']:
-            return f"❌ Error fetching data for {data['ticker']}: {data.get('error', 'Unknown error')}\n"
+    def __init__(self, api_key: str, provider: str = "gemini"):
+        self.api_key = api_key
+        self.provider = provider.lower()
         
-        provider_name = data.get('provider', 'AI').upper()
-        if provider_name == 'GEMINI':
-            provider_display = "Google Gemini 2.0 Flash"
-        elif provider_name == 'OPENAI':
-            provider_display = "OpenAI GPT-4o-mini"
+        # Initialize AI provider
+        if self.provider == "gemini" and GENAI_AVAILABLE:
+            genai.configure(api_key=api_key)
+            self.model = genai.GenerativeModel('gemini-2.0-flash-exp')
+        elif self.provider == "openai" and OPENAI_AVAILABLE:
+            self.client = OpenAI(api_key=api_key)
+            self.model_name = "gpt-4o-mini"
         else:
-            provider_display = provider_name
+            raise ValueError(f"Provider {provider} not available or not supported")
+    
+    def fetch_gurufocus_data(self, ticker: str) -> Dict:
+        """
+        Fetch quantitative data with industry benchmarks
+        Returns metrics dictionary for analysis
+        """
+        checker = EnhancedYFinanceChecker(ticker, api_key=self.api_key, provider=self.provider)
+        return checker.get_all_metrics_with_benchmarks()
+    
+    def format_qualitative_report(self, metrics: Dict) -> str:
+        """
+        Format the quantitative analysis report
+        """
+        # Extract benchmark count
+        peer_count = metrics.get('_peer_count', 0)
+        benchmark_count = metrics.get('_benchmark_count', 0)
         
-        report = f"{'='*80}\n"
-        report += f"  📊 COMPREHENSIVE INVESTMENT ANALYSIS FOR {data['ticker']}\n"
-        report += f"{'='*80}\n"
-        report += f"  🤖 AI Provider: {provider_display}\n"
-        report += f"  📡 Data Source: {data.get('data_source', 'Yahoo Finance')}\n"
-        report += f"  🕒 Analysis Timestamp: {data.get('timestamp', 'N/A')}\n"
-        report += f"{'='*80}\n\n"
+        report = f"""
+{'='*90}
+📊 QUANTITATIVE ANALYSIS WITH INDUSTRY BENCHMARKS
+{'='*90}
+Company: {metrics.get('company_name', 'N/A')}
+Sector: {metrics.get('sector', 'N/A')}
+Industry: {metrics.get('industry', 'N/A')}
+Peer Companies: {peer_count}
+Benchmark Metrics: {benchmark_count}
+
+{'='*90}
+💰 PRICE & MARKET DATA
+{'='*90}
+Current Price:         {metrics.get('currentPrice', 'N/A')}
+Market Cap:            {metrics.get('marketCap', 'N/A')}
+
+{'='*90}
+📈 PROFITABILITY METRICS
+{'='*90}
+Gross Margin:          {metrics.get('grossMargins', 'N/A')}
+Operating Margin:      {metrics.get('operatingMargins', 'N/A')}
+Net Profit Margin:     {metrics.get('profitMargins', 'N/A')}
+ROE:                   {metrics.get('returnOnEquity', 'N/A')}
+ROA:                   {metrics.get('returnOnAssets', 'N/A')}
+
+{'='*90}
+🚀 GROWTH METRICS
+{'='*90}
+Revenue Growth (YoY):  {metrics.get('revenueGrowth', 'N/A')}
+Earnings Growth:       {metrics.get('earningsGrowth', 'N/A')}
+
+{'='*90}
+💪 FINANCIAL HEALTH
+{'='*90}
+Current Ratio:         {metrics.get('currentRatio', 'N/A')}
+Quick Ratio:           {metrics.get('quickRatio', 'N/A')}
+Debt to Equity:        {metrics.get('debtToEquity', 'N/A')}
+
+{'='*90}
+💵 VALUATION METRICS
+{'='*90}
+P/E (Trailing):        {metrics.get('trailingPE', 'N/A')}
+P/E (Forward):         {metrics.get('forwardPE', 'N/A')}
+P/B Ratio:             {metrics.get('priceToBook', 'N/A')}
+P/S Ratio:             {metrics.get('priceToSalesTrailing12Months', 'N/A')}
+
+{'='*90}
+📍 BENCHMARK LEGEND
+{'='*90}
+🟢 = Top 25% (Excellent performance vs peers)
+🟡 = Above Median (Good performance vs peers)
+🟠 = Below Median (Below average vs peers)
+🔴 = Bottom 25% (Weak performance vs peers)
+❓ = Insufficient benchmark data
+
+For valuation metrics (P/E, P/B, etc.), lower is better.
+{'='*90}
+"""
         
-        if 'raw_response' in data and data['raw_response']:
-            report += data['raw_response']
-        else:
-            report += "No data available.\n"
-        
-        report += f"\n\n{'='*80}\n"
-        report += "INDUSTRY COMPARISON METHODOLOGY:\n"
-        report += "✅ = Above industry median (calculated from actual peer companies)\n"
-        report += "⚠️ = Below industry median (calculated from actual peer companies)\n"
-        report += f"\nPeer companies identified from same sector via Yahoo Finance\n"
-        report += f"Analysis powered by {provider_display}\n"
-        report += f"{'='*80}\n"
+        # Add AI analysis if available
+        if self.api_key:
+            try:
+                ai_analysis = self._generate_ai_investment_analysis(metrics)
+                report += f"\n{ai_analysis}"
+            except Exception as e:
+                report += f"\n⚠️ AI analysis failed: {str(e)}\n"
         
         return report
+    
+    def _generate_ai_investment_analysis(self, metrics: Dict) -> str:
+        """Generate AI-powered investment analysis"""
+        prompt = f"""Analyze this stock data with benchmark comparisons:
+
+Company: {metrics.get('company_name', 'N/A')}
+Sector: {metrics.get('sector', 'N/A')}
+
+PROFITABILITY (vs {metrics.get('_peer_count', 0)} peers):
+- Gross Margin: {metrics.get('grossMargins', 'N/A')}
+- Operating Margin: {metrics.get('operatingMargins', 'N/A')}
+- Net Margin: {metrics.get('profitMargins', 'N/A')}
+- ROE: {metrics.get('returnOnEquity', 'N/A')}
+- ROA: {metrics.get('returnOnAssets', 'N/A')}
+
+GROWTH:
+- Revenue Growth: {metrics.get('revenueGrowth', 'N/A')}
+- Earnings Growth: {metrics.get('earningsGrowth', 'N/A')}
+
+FINANCIAL HEALTH:
+- Current Ratio: {metrics.get('currentRatio', 'N/A')}
+- Quick Ratio: {metrics.get('quickRatio', 'N/A')}
+- Debt/Equity: {metrics.get('debtToEquity', 'N/A')}
+
+VALUATION:
+- P/E: {metrics.get('trailingPE', 'N/A')}
+- P/B: {metrics.get('priceToBook', 'N/A')}
+- P/S: {metrics.get('priceToSalesTrailing12Months', 'N/A')}
+
+Provide a concise investment analysis (300 words) covering:
+1. Overall competitive position (reference 🟢🟡🟠🔴 indicators)
+2. Key strengths and weaknesses
+3. Investment recommendation (Strong Buy/Buy/Hold/Sell/Strong Sell)
+4. Main risks and opportunities
+
+Be specific and reference the benchmark indicators."""
+        
+        if self.provider == "gemini":
+            response = self.model.generate_content(prompt)
+            analysis = response.text
+        else:  # openai
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {"role": "system", "content": "You are a professional financial analyst. Provide clear, actionable investment insights based on quantitative benchmarks."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3
+            )
+            analysis = response.choices[0].message.content
+        
+        return f"""
+{'='*90}
+🤖 AI-POWERED INVESTMENT ANALYSIS
+{'='*90}
+{analysis}
+{'='*90}
+"""
 
 
-# Helper functions
-def get_available_providers():
-    """Returns list of available AI providers"""
-    providers = []
-    if GENAI_AVAILABLE:
-        providers.append("gemini")
-    if OPENAI_AVAILABLE:
-        providers.append("openai")
-    return providers
+# Convenience function for integration with existing app.py
+def analyze_stock_with_benchmarks(ticker: str, api_key: Optional[str] = None, 
+                                  provider: str = "gemini") -> str:
+    """
+    Main function to analyze a stock with industry benchmarks
+    Compatible with existing app.py API key input method
+    
+    Args:
+        ticker: Stock symbol
+        api_key: Optional AI API key (Gemini or OpenAI)
+        provider: "gemini" or "openai"
+    
+    Returns:
+        Formatted analysis report string
+    """
+    checker = EnhancedYFinanceChecker(ticker, api_key=api_key, provider=provider)
+    return checker.generate_report()
 
-def is_provider_available(provider: str) -> bool:
-    """Check if a specific provider is available"""
-    if provider.lower() == "gemini":
-        return GENAI_AVAILABLE
-    elif provider.lower() == "openai":
-        return OPENAI_AVAILABLE
-    return False
+
+# Standalone execution (for testing)
+if __name__ == "__main__":
+    print("="*90)
+    print("🎯 Enhanced YFinance Discrepancy Checker with AI Benchmarking")
+    print("="*90)
+    
+    ticker = input("\nEnter ticker symbol (e.g., AAPL): ").strip().upper()
+    
+    use_ai = input("Use AI analysis? (y/n): ").strip().lower() == 'y'
+    
+    api_key = None
+    provider = "gemini"
+    if use_ai:
+        provider = input("AI provider (gemini/openai) [gemini]: ").strip().lower() or "gemini"
+        api_key = input(f"Enter your {provider.upper()} API key: ").strip()
+    
+    print(f"\n🚀 Analyzing {ticker}...")
+    
+    report = analyze_stock_with_benchmarks(ticker, api_key=api_key, provider=provider)
+    
+    print(report)
+    
+    # Option to save
+    save = input("\n💾 Save report to file? (y/n): ").strip().lower()
+    if save == 'y':
+        filename = f"{ticker}_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        with open(filename, 'w') as f:
+            f.write(report)
+        print(f"✅ Report saved to: {filename}")

@@ -57,3 +57,34 @@ class StockValuationModel:
             valuations['P/B Ratio Method'] = target_book_value_per_share * competitor_avg_pb
         return valuations
 
+    def ev_ebitda_valuation(self, target_ebitda, competitor_avg_ev_ebitda, 
+                            total_debt, cash_equivalents, shares_outstanding):
+        """
+        EV/EBITDA multiple valuation
+        
+        Args:
+            target_ebitda: Company's EBITDA
+            competitor_avg_ev_ebitda: Average EV/EBITDA ratio of competitors
+            total_debt: Total debt
+            cash_equivalents: Cash and cash equivalents
+            shares_outstanding: Number of shares outstanding
+        
+        Returns:
+            Estimated price per share
+        """
+        if not competitor_avg_ev_ebitda or not target_ebitda or target_ebitda <= 0:
+            return None
+        
+        # Calculate implied Enterprise Value
+        implied_ev = target_ebitda * competitor_avg_ev_ebitda
+        
+        # Convert EV to Equity Value
+        # Equity Value = EV - Total Debt + Cash & Equivalents
+        equity_value = implied_ev - total_debt + cash_equivalents
+        
+        if shares_outstanding == 0 or shares_outstanding is None:
+            return None
+        
+        # Calculate price per share
+        price_per_share = equity_value / shares_outstanding
+        return price_per_share
