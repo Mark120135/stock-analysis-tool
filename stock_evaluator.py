@@ -1,8 +1,8 @@
 """
 Comprehensive Stock Evaluation System
 Based on the refined Stock Evaluation Criteria with:
-- Quantitative Factors (20% weight)
-- Qualitative Factors (30% weight)
+- Quantitative Factors (23% weight)
+- Qualitative Factors (27% weight)
 - Valuation Factors (40% weight)
 - Operational & Practical Factors (10% weight)
 - Justification Credits (cross-check bonuses)
@@ -907,8 +907,8 @@ class StockEvaluator:
     def _calculate_final_score_and_recommendation(self, quant_total, qual_norm, val_total, ops_total, credits_total) -> Dict:
          """Calculates the final weighted score and recommendation."""
          analysis_score_10 = (
-             (quant_total * 0.20) +
-             (qual_norm * 0.30) +
+             (quant_total * 0.23) +
+             (qual_norm * 0.27) +
              (val_total * 0.40) +
              (ops_total * 0.10)
          )
@@ -924,7 +924,7 @@ class StockEvaluator:
              'final_score': final_score,
              'analysis_score_100': analysis_score_100,
              'recommendation': recommendation,
-             'weights': {'quant': 0.20, 'qual': 0.30, 'val': 0.40, 'ops': 0.10}
+             'weights': {'quant': 0.23, 'qual': 0.27, 'val': 0.40, 'ops': 0.10}
          }
 
     # ==================== Main Evaluation Function ====================
