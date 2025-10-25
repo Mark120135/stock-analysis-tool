@@ -2,406 +2,781 @@ import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, Canvas, Frame, Scrollbar
 import numpy as np
 import yfinance as yf
-from datetime import datetime
-import threading # For running AI calls without blocking UI
-import traceback # For error details
 
 from data_fetcher import YahooFinanceDataFetcher
 from data_processor import StockDataProcessor
 from visualizer import StockVisualizer
 from valuation_model import StockValuationModel
 
-# Try to import AI analyzers AND the new guidance data
+# Try to import AI analyzers
 try:
-    from stock_evaluator import ( StockEvaluator, get_available_providers, is_provider_available, QUALITATIVE_QUESTIONS_GUIDANCE )
-    EVALUATOR_AVAILABLE = True
-except ImportError as e:
-    print(f"Import Error: {e}"); EVALUATOR_AVAILABLE = False
-    class StockEvaluator: pass; QUALITATIVE_QUESTIONS_GUIDANCE = {} # Placeholders
+    from stock_evaluator import ComprehensiveStockAnalyzer, get_available_providers, is_provider_available
+    COMPREHENSIVE_ANALYZER_AVAILABLE = True
+except ImportError:
+    COMPREHENSIVE_ANALYZER_AVAILABLE = False
+    print("Warning: Comprehensive analyzer not available.")
 
 
 class StockAnalysisApp:
     def __init__(self, root):
-        self.root = root; self.root.title("Stock Analysis Tool"); self.root.geometry("1200x850") # Slightly larger height
-        self.fetched_data = {}; self.fetcher = YahooFinanceDataFetcher(); self.processor = StockDataProcessor()
-        self.valuation_model = StockValuationModel(risk_free_rate=0.04, market_return=0.09)
-        self.stock_evaluator_instance = None; self.selected_provider = tk.StringVar(value="gemini")
+        self.root = root
+        self.root.title("Stock Analysis and Valuation Tool")
+        self.root.geometry("1200x800")
 
-        # --- Widget Dictionaries ---
-        # Guidance Tab
-        self.qual_guidance_entries = {} # {q_key: widget}
-        self.qual_guidance_ai_widgets = {} # {q_key: (score_label, text_widget)}
-        # Final Result Tab (Now includes inputs again)
-        self.final_quant_entries = {}
-        self.final_quant_industry_entries = {}
-        self.final_val_entries = {}
-        self.final_ops_entries = {}
-        # Internal storage
-        self._pushed_scores_temp = {} # {q_key: score}
+        self.fetched_data = {}
+        self.fetcher = YahooFinanceDataFetcher()
+        self.processor = StockDataProcessor()
+        self.valuation_model = StockValuationModel(risk_free_rate=0.04, market_return=0.09)
+
+        # Analyzers
+        self.comprehensive_analyzer = None
+        
+        # NEW: Dictionaries for comprehensive tab widgets
+        self.quant_entries = {}
+        self.quant_suggestions = {}
+        self.quant_industry_entries = {}
+        self.qual_entries = {}
+        self.qual_suggestions = {}
+        self.val_entries = {}
+        self.ops_entries = {}
+        self.ops_suggestions = {}
 
         self._create_widgets()
 
     def _create_widgets(self):
-        # AI Config Frame
-        api_frame = ttk.LabelFrame(self.root, text="🤖 AI Config", padding=5); api_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=2)
-        # ... (API frame widgets layout - kept concise for brevity) ...
-        provider_frame = ttk.Frame(api_frame); provider_frame.grid(row=0, column=0, columnspan=4, sticky="w") # Grid layout
-        ttk.Label(provider_frame, text="Provider:").pack(side=tk.LEFT)
-        self.gemini_radio=ttk.Radiobutton(provider_frame, text="G", variable=self.selected_provider, value="gemini", command=self._on_provider_change); self.gemini_radio.pack(side=tk.LEFT)
-        self.openai_radio=ttk.Radiobutton(provider_frame, text="O", variable=self.selected_provider, value="openai", command=self._on_provider_change); self.openai_radio.pack(side=tk.LEFT)
-        ttk.Label(api_frame, text="Key:", anchor='w').grid(row=1, column=0, sticky="w", padx=2)
-        self.api_key_entry = ttk.Entry(api_frame, width=30, show="*"); self.api_key_entry.grid(row=1, column=1, sticky="ew", padx=2)
-        self.set_api_button = ttk.Button(api_frame, text="Set & Init", command=self.set_api_key, width=8); self.set_api_button.grid(row=1, column=2, padx=2)
-        self.api_status_label = ttk.Label(api_frame, text="Stat: None", foreground="red", width=15, anchor='w'); self.api_status_label.grid(row=1, column=3, sticky='w', padx=2)
-        self.instruction_label = ttk.Label(api_frame, text="Key Instructions", foreground="blue", cursor="hand2", anchor='w'); self.instruction_label.grid(row=0, column=4, rowspan=2, sticky='w', padx=5) # Place instruction link
-        api_frame.columnconfigure(1, weight=1) # Allow key entry to expand
-        self._on_provider_change(); self._update_provider_availability()
+        # === AI API Configuration Frame ===
+        api_frame = ttk.LabelFrame(self.root, text="🤖 AI API Configuration (Optional)", padding=10)
+        api_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
+        
+        # Provider selection
+        provider_frame = ttk.Frame(api_frame)
+        provider_frame.grid(row=0, column=0, columnspan=4, padx=5, pady=(0, 10), sticky="w")
+        
+        ttk.Label(provider_frame, text="Select AI Provider:", font=("Arial", 10, "bold")).pack(side=tk.LEFT, padx=(0, 10))
+        
+        self.selected_provider = tk.StringVar(value="gemini")
+        
+        # Gemini radio button
+        self.gemini_radio = ttk.Radiobutton(
+            provider_frame, 
+            text="🔷 Google Gemini",
+            variable=self.selected_provider, 
+            value="gemini",
+            command=self._on_provider_change
+        )
+        self.gemini_radio.pack(side=tk.LEFT, padx=5)
+        
+        # OpenAI radio button
+        self.openai_radio = ttk.Radiobutton(
+            provider_frame, 
+            text="🟢 OpenAI ChatGPT",
+            variable=self.selected_provider, 
+            value="openai",
+            command=self._on_provider_change
+        )
+        self.openai_radio.pack(side=tk.LEFT, padx=5)
+        
+        # Instructions label
+        self.instruction_label = ttk.Label(
+            api_frame, 
+            text="Get Gemini API key at: https://makersuite.google.com/app/apikey",
+            foreground="blue",
+            cursor="hand2"
+        )
+        self.instruction_label.grid(row=1, column=0, columnspan=4, padx=5, pady=(0, 5), sticky="w")
+        
+        # API Key input
+        ttk.Label(api_frame, text="API Key:", font=("Arial", 10, "bold")).grid(row=2, column=0, padx=5, pady=5, sticky="w")
+        self.api_key_entry = ttk.Entry(api_frame, width=60, show="*", font=("Arial", 10))
+        self.api_key_entry.grid(row=2, column=1, padx=5, pady=5, sticky="ew")
+        
+        self.set_api_button = ttk.Button(api_frame, text="✓ Set API Key", command=self.set_api_key)
+        self.set_api_button.grid(row=2, column=2, padx=5, pady=5)
+        
+        # Status indicator
+        self.api_status_label = ttk.Label(api_frame, text="● Not configured", foreground="red")
+        self.api_status_label.grid(row=2, column=3, padx=5, pady=5)
+        
+        api_frame.columnconfigure(1, weight=1)
+        
+        # Check availability
+        self._update_provider_availability()
+        
+        # Stock Input Frame (Kept from original)
+        input_frame = ttk.LabelFrame(self.root, text="Stock Information Input", padding=5)
+        input_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5)
 
-        # Stock Input Frame
-        input_frame = ttk.LabelFrame(self.root, text="Stock Input", padding=5); input_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=2)
-        # ... (Ticker, Competitors, Run button layout) ...
-        ttk.Label(input_frame, text="Ticker:").pack(side=tk.LEFT, padx=2)
-        self.main_ticker_entry = ttk.Entry(input_frame, width=8); self.main_ticker_entry.pack(side=tk.LEFT, padx=2); self.main_ticker_entry.insert(0, "AAPL")
-        ttk.Label(input_frame, text="Competitors:").pack(side=tk.LEFT, padx=2)
-        self.competitors_entry = ttk.Entry(input_frame, width=15); self.competitors_entry.pack(side=tk.LEFT, padx=2); self.competitors_entry.insert(0, "MSFT,GOOG")
-        self.run_analysis_button = ttk.Button(input_frame, text="Run Basic Analysis", command=self.run_analysis); self.run_analysis_button.pack(side=tk.LEFT, padx=5)
+        ttk.Label(input_frame, text="Main Ticker:").pack(side=tk.LEFT, padx=5)
+        self.main_ticker_entry = ttk.Entry(input_frame, width=10)
+        self.main_ticker_entry.pack(side=tk.LEFT, padx=5)
+        self.main_ticker_entry.insert(0, "AAPL") # Default value
 
+        ttk.Label(input_frame, text="Competitors (comma-sep):").pack(side=tk.LEFT, padx=5)
+        self.competitors_entry = ttk.Entry(input_frame, width=20)
+        self.competitors_entry.pack(side=tk.LEFT, padx=5)
+        self.competitors_entry.insert(0, "MSFT,GOOG") # Default value
 
-        # Notebook
-        self.notebook = ttk.Notebook(self.root); self.notebook.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.run_analysis_button = ttk.Button(input_frame, text="Run Basic Analysis", command=self.run_analysis)
+        self.run_analysis_button.pack(side=tk.LEFT, padx=10, pady=5)
 
-        # Tabs (Chart, Financials, Valuation)
-        self.plot_frame = ttk.Frame(self.notebook); self.notebook.add(self.plot_frame, text="📊 Charts")
+        # Notebook with tabs - UPDATED
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        # Chart Analysis Tab (Kept from original)
+        self.plot_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.plot_frame, text="📊 Chart Analysis")
         self.visualizer = StockVisualizer(master=self.plot_frame)
-        self.financials_frame = ttk.Frame(self.notebook); self.notebook.add(self.financials_frame, text="📋 Financials")
-        self.financials_text = scrolledtext.ScrolledText(self.financials_frame, height=15); self.financials_text.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
-        self.valuation_frame = ttk.Frame(self.notebook); self.notebook.add(self.valuation_frame, text="💰 Valuation")
-        self.valuation_output = scrolledtext.ScrolledText(self.valuation_frame, height=15); self.valuation_output.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
 
-        # Qualitative Guidance Tab
-        self.qual_guidance_frame = ttk.Frame(self.notebook); self.notebook.add(self.qual_guidance_frame, text="🤔 Qual Guidance")
-        self._create_qualitative_guidance_tab()
+        # Financial Statements Tab (Kept from original)
+        self.financials_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.financials_frame, text="📋 Financial Statements")
+        self.financials_text = scrolledtext.ScrolledText(self.financials_frame, wrap=tk.WORD, width=100, height=20, font=("Courier", 9))
+        self.financials_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        # Comprehensive Result Tab (with Inputs Restored)
-        self.comprehensive_frame = ttk.Frame(self.notebook); self.notebook.add(self.comprehensive_frame, text="🎯 Comprehensive Result")
-        self._create_comprehensive_result_tab_with_inputs() # Use new builder
+        # Valuation Results Tab (Kept from original)
+        self.valuation_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.valuation_frame, text="💰 Valuation Results")
+        self.valuation_output = scrolledtext.ScrolledText(self.valuation_frame, wrap=tk.WORD, width=100, height=20, font=("Courier", 9))
+        self.valuation_output.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # NEW: Comprehensive Evaluation Tab (Replaces Quantitative + Qualitative tabs)
+        self.comprehensive_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.comprehensive_frame, text="🎯 Comprehensive Evaluation (PDF)")
+        
+        # Create comprehensive evaluation interface
+        self._create_comprehensive_evaluation_tab()
 
-    def _create_qualitative_guidance_tab(self):
-        # ... (Guidance Tab UI - Kept as is from previous version) ...
-        # Includes: Load AI Button, Push Scores Button, Status Label, Scrollable Frame
-        # Inside scrollable frame: Loops through QUALITATIVE_QUESTIONS_GUIDANCE
-        # Creates: Question Label, Guidance Label, Score Entry (self.qual_guidance_entries), AI Frame (self.qual_guidance_ai_widgets)
-        button_frame = ttk.Frame(self.qual_guidance_frame); button_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
-        self.load_ai_guidance_button = ttk.Button(button_frame, text="🤖 Load AI Guidance", command=self._load_ai_guidance, state="disabled"); self.load_ai_guidance_button.pack(side=tk.LEFT, padx=5)
-        self.push_scores_button = ttk.Button(button_frame, text="➡️ Push Scores", command=self._push_qualitative_scores); self.push_scores_button.pack(side=tk.LEFT, padx=5)
-        self.ai_guidance_status = ttk.Label(button_frame, text="Status: Idle", width=50); self.ai_guidance_status.pack(side=tk.LEFT, padx=10, fill=tk.X, expand=True)
-        main_frame = Frame(self.qual_guidance_frame); main_frame.pack(fill=tk.BOTH, expand=True)
-        canvas = Canvas(main_frame); scrollbar = Scrollbar(main_frame, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas, padding=10)
-        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw"); canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.pack(side="left", fill="both", expand=True); scrollbar.pack(side="right", fill="y")
-        row = 0
-        if QUALITATIVE_QUESTIONS_GUIDANCE:
-            # ... (Loop creating labels, entries, AI frames - code identical to previous version) ...
-            pass # Placeholder
-        else: ttk.Label(scrollable_frame, text="Error loading structure.").pack()
+    def _create_comprehensive_evaluation_tab(self):
+        """Create the comprehensive evaluation tab as a scrollable form"""
+        
+        # Top button frame
+        button_frame = ttk.Frame(self.comprehensive_frame)
+        button_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
+        
+        self.load_suggestions_button = ttk.Button(
+            button_frame, 
+            text="🚀 Load Suggestions (Yahoo + AI)",
+            command=self._load_suggestions
+        )
+        self.load_suggestions_button.pack(side=tk.LEFT, padx=5)
 
+        self.calculate_score_button = ttk.Button(
+            button_frame, 
+            text="🧮 Calculate Final Score",
+            command=self._calculate_comprehensive_score
+        )
+        self.calculate_score_button.pack(side=tk.LEFT, padx=5)
 
-    # --- NEW: Builder for Final Tab WITH Inputs ---
-    def _create_comprehensive_result_tab_with_inputs(self):
-        """Builds UI for final tab, including Quant, Val, Ops inputs."""
+        # Main frame with scrollbar
+        main_frame = Frame(self.comprehensive_frame)
+        main_frame.pack(fill=tk.BOTH, expand=True)
 
-        # --- Top Frame: Calculate Button ---
-        top_frame = ttk.Frame(self.comprehensive_frame)
-        top_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
-        self.calculate_final_button = ttk.Button(top_frame, text="🧮 Calculate Final Score (using Inputs & Pushed Qual Scores)", command=self._calculate_final_comprehensive_score); self.calculate_final_button.pack(side=tk.LEFT, padx=5)
-        # Optional: Add a status label here if needed
+        canvas = Canvas(main_frame)
+        scrollbar = Scrollbar(main_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
 
-        # --- Main Scrollable Area ---
-        main_frame = Frame(self.comprehensive_frame); main_frame.pack(fill=tk.BOTH, expand=True)
-        canvas = Canvas(main_frame); scrollbar = Scrollbar(main_frame, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas, padding=10)
-        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw"); canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.pack(side="left", fill="both", expand=True); scrollbar.pack(side="right", fill="y")
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
 
-        # --- Input Frames ---
-        # Quantitative
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # --- Frame for results ---
+        results_frame = ttk.LabelFrame(scrollable_frame, text="Final Report", padding=10)
+        results_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        self.comprehensive_text = scrolledtext.ScrolledText(
+            results_frame, wrap=tk.WORD, width=100, height=20, font=("Courier", 9)
+        )
+        self.comprehensive_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # --- Frame 1: Quantitative Factors ---
         quant_frame = ttk.LabelFrame(scrollable_frame, text="1. Quantitative Factors (User Entry)", padding=10)
-        quant_frame.pack(fill=tk.X, padx=10, pady=5, anchor='n')
-        self._build_final_quant_frame(quant_frame) # Call dedicated builder
+        quant_frame.pack(fill=tk.X, padx=10, pady=5)
+        self._build_quant_frame(quant_frame)
 
-        # Valuation
-        val_frame = ttk.LabelFrame(scrollable_frame, text="3. Valuation Factors (User Entry)", padding=10) # PDF Numbering
-        val_frame.pack(fill=tk.X, padx=10, pady=5, anchor='n')
-        self._build_final_val_frame(val_frame)
+        # --- Frame 2: Qualitative Factors ---
+        qual_frame = ttk.LabelFrame(scrollable_frame, text="2. Qualitative Factors (User Score 1-10)", padding=10)
+        qual_frame.pack(fill=tk.X, padx=10, pady=5)
+        self._build_qual_frame(qual_frame)
+        
+        # --- Frame 3: Valuation Factors ---
+        val_frame = ttk.LabelFrame(scrollable_frame, text="3. Valuation Factors (User Entry)", padding=10)
+        val_frame.pack(fill=tk.X, padx=10, pady=5)
+        self._build_val_frame(val_frame)
 
-        # Operational
-        ops_frame = ttk.LabelFrame(scrollable_frame, text="4. Operational Factors (User Score 1-10)", padding=10) # PDF Numbering
-        ops_frame.pack(fill=tk.X, padx=10, pady=5, anchor='n')
-        self._build_final_ops_frame(ops_frame)
+        # --- Frame 4: Operational Factors ---
+        ops_frame = ttk.LabelFrame(scrollable_frame, text="4. Operational Factors (User Score 1-10)", padding=10)
+        ops_frame.pack(fill=tk.X, padx=10, pady=5)
+        self._build_ops_frame(ops_frame)
 
-        # --- Report Output Frame ---
-        results_frame = ttk.LabelFrame(scrollable_frame, text="Final Comprehensive Report", padding=10)
-        results_frame.pack(fill=tk.X, padx=10, pady=10, anchor='n')
-        self.comprehensive_report_text = scrolledtext.ScrolledText(results_frame, wrap=tk.WORD, height=25, font=("Courier", 9)); self.comprehensive_report_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        self.comprehensive_report_text.insert(tk.END, "Enter Quant/Val/Ops data above, push Qual scores, then Calculate."); self.comprehensive_report_text.config(state="disabled")
+    def _create_labeled_entry(self, parent, text, row, var_dict, var_key, 
+                              sugg_dict=None, sugg_key=None, col_offset=0):
+        """Helper function to create a labeled entry widget"""
+        ttk.Label(parent, text=text).grid(row=row, column=col_offset, sticky='w', padx=5, pady=2)
+        entry = ttk.Entry(parent, width=12)
+        entry.grid(row=row, column=col_offset + 1, padx=5, pady=2)
+        var_dict[var_key] = entry
+        
+        if sugg_dict is not None and sugg_key is not None:
+            sugg_label = ttk.Label(parent, text="Yahoo: N/A", foreground="blue")
+            sugg_label.grid(row=row, column=col_offset + 2, sticky='w', padx=5)
+            sugg_dict[sugg_key] = sugg_label
 
-    # --- NEW: Helper builders for final tab inputs ---
-    def _build_final_quant_frame(self, parent):
-        """Builds quantitative input widgets for the final tab."""
-        # This structure mirrors the one from the fully refactored version
-        # Uses self.final_quant_entries and self.final_quant_industry_entries
-        self.final_quant_entries = {} # Reset specific dict for this frame
-        self.final_quant_industry_entries = {}
-
+    def _build_quant_frame(self, parent):
+        """Builds the quantitative factors input frame"""
         # Profitability
-        ttk.Label(parent, text="Profitability", font=("Arial", 10, "bold")).grid(row=0, column=0, columnspan=3, sticky='w', pady=2)
-        self._create_labeled_entry_final(parent, "Avg. Margins:", 1, self.final_quant_entries, 'avg_margins')
-        self._create_labeled_entry_final(parent, "ROE:", 2, self.final_quant_entries, 'roe')
-        self._create_labeled_entry_final(parent, "ROA:", 3, self.final_quant_entries, 'roa')
+        ttk.Label(parent, text="Profitability", font=("Arial", 10, "bold")).grid(row=0, column=0, columnspan=3, sticky='w', pady=5)
+        self._create_labeled_entry(parent, "Avg. Margins (e.g., 0.3):", 1, self.quant_entries, 'avg_margins')
+        self._create_labeled_entry(parent, "ROE (e.g., 0.15):", 2, self.quant_entries, 'roe', self.quant_suggestions, 'roe')
+        self._create_labeled_entry(parent, "ROA (e.g., 0.08):", 3, self.quant_entries, 'roa', self.quant_suggestions, 'roa')
+        
         # Operational Efficiency
-        ttk.Label(parent, text="Op. Efficiency", font=("Arial", 10, "bold")).grid(row=4, column=0, columnspan=3, sticky='w', pady=2)
-        self._create_labeled_entry_final(parent, "Days Inv:", 5, self.final_quant_entries, 'days_inventory')
-        self._create_labeled_entry_final(parent, "Days Sales:", 6, self.final_quant_entries, 'days_sales')
-        ttk.Label(parent, text="Ind Avg Inv:").grid(row=5, column=3, sticky='w'); e_ind_inv = ttk.Entry(parent, width=8); e_ind_inv.grid(row=5, column=4); self.final_quant_industry_entries['days_inventory'] = e_ind_inv
-        ttk.Label(parent, text="Ind Avg DSO:").grid(row=6, column=3, sticky='w'); e_ind_dso = ttk.Entry(parent, width=8); e_ind_dso.grid(row=6, column=4); self.final_quant_industry_entries['days_sales'] = e_ind_dso
+        ttk.Label(parent, text="Operational Efficiency", font=("Arial", 10, "bold")).grid(row=4, column=0, columnspan=3, sticky='w', pady=5)
+        self._create_labeled_entry(parent, "Days Inventory:", 5, self.quant_entries, 'days_inventory')
+        self._create_labeled_entry(parent, "Days Sales Outstanding:", 6, self.quant_entries, 'days_sales')
+        ttk.Label(parent, text="Industry Avg Days Inv:").grid(row=5, column=3, sticky='w', padx=5)
+        self.quant_industry_entries['days_inventory'] = ttk.Entry(parent, width=10)
+        self.quant_industry_entries['days_inventory'].grid(row=5, column=4, padx=5)
+        ttk.Label(parent, text="Industry Avg DSO:").grid(row=6, column=3, sticky='w', padx=5)
+        self.quant_industry_entries['days_sales'] = ttk.Entry(parent, width=10)
+        self.quant_industry_entries['days_sales'].grid(row=6, column=4, padx=5)
+        
         # Solvency
-        ttk.Label(parent, text="Solvency", font=("Arial", 10, "bold")).grid(row=7, column=0, columnspan=3, sticky='w', pady=2)
-        self._create_labeled_entry_final(parent, "Current R:", 8, self.final_quant_entries, 'current_ratio')
-        self._create_labeled_entry_final(parent, "Quick R:", 9, self.final_quant_entries, 'quick_ratio')
-        self._create_labeled_entry_final(parent, "Interest Cov:", 10, self.final_quant_entries, 'interest_coverage')
-        self._create_labeled_entry_final(parent, "Debt/Equity:", 11, self.final_quant_entries, 'total_debt_equity')
-        # Growth
-        ttk.Label(parent, text="Growth", font=("Arial", 10, "bold")).grid(row=0, column=3, columnspan=3, sticky='w', pady=2, padx=10)
-        self._create_labeled_entry_final(parent, "Rev Growth:", 1, self.final_quant_entries, 'revenue_growth_yoy', col_offset=3)
-        self._create_labeled_entry_final(parent, "EPS Growth:", 2, self.final_quant_entries, 'eps_growth_yoy', col_offset=3)
-        # Risk
-        ttk.Label(parent, text="Risk", font=("Arial", 10, "bold")).grid(row=3, column=3, columnspan=3, sticky='w', pady=2, padx=10)
-        self._create_labeled_entry_final(parent, "Beta:", 4, self.final_quant_entries, 'beta', col_offset=3)
-        self._create_labeled_entry_final(parent, "Volatility:", 5, self.final_quant_entries, 'volatility', col_offset=3)
-        # Credits Metrics
-        ttk.Label(parent, text="For Credits", font=("Arial", 10, "bold")).grid(row=7, column=3, columnspan=3, sticky='w', pady=2, padx=10)
-        self._create_labeled_entry_final(parent, "P/E:", 8, self.final_quant_entries, 'pe', col_offset=3)
-        ttk.Label(parent, text="Ind Avg PE:").grid(row=8, column=5, sticky='w'); e_ind_pe = ttk.Entry(parent, width=8); e_ind_pe.grid(row=8, column=6); self.final_quant_industry_entries['pe'] = e_ind_pe
-        self.final_quant_entries['margin_expanding'] = tk.BooleanVar() # Store BooleanVar
-        ttk.Checkbutton(parent, text="Margins Expanding?", variable=self.final_quant_entries['margin_expanding']).grid(row=9, column=3, columnspan=2, sticky='w', padx=10)
+        ttk.Label(parent, text="Solvency", font=("Arial", 10, "bold")).grid(row=7, column=0, columnspan=3, sticky='w', pady=5)
+        self._create_labeled_entry(parent, "Current Ratio:", 8, self.quant_entries, 'current_ratio', self.quant_suggestions, 'current_ratio')
+        self._create_labeled_entry(parent, "Quick Ratio:", 9, self.quant_entries, 'quick_ratio')
+        self._create_labeled_entry(parent, "Interest Coverage:", 10, self.quant_entries, 'interest_coverage')
+        self._create_labeled_entry(parent, "Total Debt/Equity:", 11, self.quant_entries, 'total_debt_equity', self.quant_suggestions, 'total_debt_equity')
 
-    def _build_final_val_frame(self, parent):
-        """Builds valuation input widgets for the final tab."""
-        self.final_val_entries = {} # Reset specific dict
-        self._create_labeled_entry_final(parent, "Current Price:", 0, self.final_val_entries, 'current_price')
-        self._create_labeled_entry_final(parent, "DCF Value:", 1, self.final_val_entries, 'dcf_value')
-        self._create_labeled_entry_final(parent, "Relative Value (Avg):", 2, self.final_val_entries, 'relative_value')
-        # Add populate button
-        ttk.Button(parent, text="Populate from Valuation Tab", command=self._populate_final_val_inputs).grid(row=1, column=3, padx=10)
+        # Growth Potential
+        ttk.Label(parent, text="Growth Potential", font=("Arial", 10, "bold")).grid(row=0, column=3, columnspan=3, sticky='w', pady=5, padx=20)
+        self._create_labeled_entry(parent, "Revenue Growth (YoY):", 1, self.quant_entries, 'revenue_growth_yoy', self.quant_suggestions, 'revenue_growth_yoy', col_offset=3)
+        self._create_labeled_entry(parent, "EPS Growth (YoY):", 2, self.quant_entries, 'eps_growth_yoy', self.quant_suggestions, 'eps_growth_yoy', col_offset=3)
 
-    def _build_final_ops_frame(self, parent):
-        """Builds operational input widgets for the final tab."""
-        self.final_ops_entries = {} # Reset specific dict
-        self._create_labeled_entry_final(parent, "Liquidity (1-10):", 0, self.final_ops_entries, 'liquidity')
-        self._create_labeled_entry_final(parent, "Tax/Reg (1-10):", 1, self.final_ops_entries, 'tax')
-        self._create_labeled_entry_final(parent, "Dividend (1-10):", 2, self.final_ops_entries, 'dividend')
-        self._create_labeled_entry_final(parent, "Portfolio Fit (1-10):", 3, self.final_ops_entries, 'portfolio_fit')
+        # Risk Metrics
+        ttk.Label(parent, text="Risk Metrics", font=("Arial", 10, "bold")).grid(row=3, column=3, columnspan=3, sticky='w', pady=5, padx=20)
+        self._create_labeled_entry(parent, "Beta:", 4, self.quant_entries, 'beta', self.quant_suggestions, 'beta', col_offset=3)
+        self._create_labeled_entry(parent, "Volatility (e.g., 0.3):", 5, self.quant_entries, 'volatility', col_offset=3)
+        
+        # Other metrics for credits
+        ttk.Label(parent, text="Metrics for Credits", font=("Arial", 10, "bold")).grid(row=7, column=3, columnspan=3, sticky='w', pady=5, padx=20)
+        self._create_labeled_entry(parent, "P/E (for credit 1):", 8, self.quant_entries, 'pe', col_offset=3)
+        ttk.Label(parent, text="Industry Avg P/E:").grid(row=8, column=5, sticky='w', padx=5)
+        self.quant_industry_entries['pe'] = ttk.Entry(parent, width=10)
+        self.quant_industry_entries['pe'].grid(row=8, column=6, padx=5)
+        
+        self.quant_entries['margin_expanding'] = tk.BooleanVar()
+        ttk.Checkbutton(parent, text="Margins Expanding? (Credit 6)", variable=self.quant_entries['margin_expanding']).grid(row=9, column=3, columnspan=2, sticky='w', padx=20)
+
+    def _build_qual_frame(self, parent):
+        """Builds the qualitative factors input frame"""
+        qual_questions = {
+            'governance': ['board_structure', 'management_integrity', 'scandal_history'],
+            'business_model': ['product_uniqueness', 'competitive_moat'],
+            'industry_outlook': ['industry_growth', 'market_position', 'global_presence'],
+            'innovation': ['rd_investment', 'innovation_revenue', 'product_launches'],
+            'esg': ['environmental', 'social', 'governance_esg'],
+            'macro': ['macro_resilience']
+        }
+        
+        row = 0
+        for category, questions in qual_questions.items():
+            self.qual_entries[category] = {}
+            self.qual_suggestions[category] = {}
+            
+            ttk.Label(parent, text=category.replace('_', ' ').title(), font=("Arial", 10, "bold")).grid(row=row, column=0, columnspan=3, sticky='w', pady=(10,2))
+            row += 1
+            
+            for q_key in questions:
+                q_text = q_key.replace('_', ' ').title()
+                ttk.Label(parent, text=f"{q_text}:").grid(row=row, column=0, sticky='w', padx=10, pady=2)
+                entry = ttk.Entry(parent, width=5)
+                entry.insert(0, "5") # Default score
+                entry.grid(row=row, column=1, padx=5, pady=2)
+                self.qual_entries[category][q_key] = entry
+                
+                sugg_label = ttk.Label(parent, text="AI Suggestion: N/A", foreground="green", wraplength=700)
+                sugg_label.grid(row=row+1, column=0, columnspan=3, sticky='w', padx=20, pady=(0,5))
+                self.qual_suggestions[category][q_key] = sugg_label
+                row += 2
+
+    def _build_val_frame(self, parent):
+        """Builds the valuation factors input frame"""
+        self._create_labeled_entry(parent, "Current Price:", 0, self.val_entries, 'current_price')
+        self._create_labeled_entry(parent, "DCF Value:", 1, self.val_entries, 'dcf_value')
+        self._create_labeled_entry(parent, "Relative Value (Avg):", 2, self.val_entries, 'relative_value')
+        
+        def populate_from_val_tab():
+            try:
+                val_text = self.valuation_output.get(1.0, tk.END)
+                price = dcf = rel = None
+                
+                for line in val_text.split('\n'):
+                    if "Current Stock Price:" in line:
+                        price = line.split('$')[-1].strip()
+                    if "DCF Intrinsic Value per Share:" in line:
+                        dcf = line.split('$')[-1].strip()
+                    if "Average Valuation:" in line: # Assumes _calculate_and_display_valuation outputs this
+                        rel = line.split('$')[-1].strip()
+                
+                if price: 
+                    self.val_entries['current_price'].delete(0, tk.END)
+                    self.val_entries['current_price'].insert(0, price)
+                if dcf: 
+                    self.val_entries['dcf_value'].delete(0, tk.END)
+                    self.val_entries['dcf_value'].insert(0, dcf)
+                if rel: 
+                    self.val_entries['relative_value'].delete(0, tk.END)
+                    self.val_entries['relative_value'].insert(0, rel)
+            except Exception as e:
+                messagebox.showwarning("Populate Error", f"Could not auto-populate values. Run basic analysis first.\n{e}")
+
+        ttk.Button(parent, text="Populate from 💰Valuation Tab", command=populate_from_val_tab).grid(row=1, column=3, padx=10)
+
+    def _build_ops_frame(self, parent):
+        """Builds the operational factors input frame"""
+        self._create_labeled_entry(parent, "Liquidity Score (1-10):", 0, self.ops_entries, 'liquidity', self.ops_suggestions, 'liquidity')
+        self._create_labeled_entry(parent, "Tax & Regulatory (1-10):", 1, self.ops_entries, 'tax')
+        self._create_labeled_entry(parent, "Dividend Score (1-10):", 2, self.ops_entries, 'dividend', self.ops_suggestions, 'dividend')
+        self._create_labeled_entry(parent, "Portfolio Fit (1-10):", 3, self.ops_entries, 'portfolio_fit')
+        
         # Set defaults
-        for key in ['liquidity', 'tax', 'dividend', 'portfolio_fit']:
-             if key in self.final_ops_entries: self.final_ops_entries[key].insert(0, "5")
+        self.ops_entries['liquidity'].insert(0, "5")
+        self.ops_entries['tax'].insert(0, "5")
+        self.ops_entries['dividend'].insert(0, "5")
+        self.ops_entries['portfolio_fit'].insert(0, "5")
 
-    # --- NEW: Helper for creating final tab entries ---
-    def _create_labeled_entry_final(self, parent, text, row, var_dict, var_key, col_offset=0):
-         """Helper to create labeled entry FOR FINAL TAB ONLY."""
-         ttk.Label(parent, text=text).grid(row=row, column=col_offset, sticky='w', padx=5, pady=2)
-         entry = ttk.Entry(parent, width=10) # Consistent width
-         entry.grid(row=row, column=col_offset + 1, padx=5, pady=2)
-         var_dict[var_key] = entry # Store the widget
+    def _update_provider_availability(self):
+        """Update UI based on which providers are available"""
+        if not COMPREHENSIVE_ANALYZER_AVAILABLE:
+            return
+        
+        available_providers = get_available_providers()
+        
+        if "gemini" not in available_providers:
+            self.gemini_radio.config(state="disabled")
+            self.gemini_radio.config(text="🔷 Google Gemini (Not installed)")
+        
+        if "openai" not in available_providers:
+            self.openai_radio.config(state="disabled")
+            self.openai_radio.config(text="🟢 OpenAI ChatGPT (Not installed)")
+        
+        if available_providers:
+            if self.selected_provider.get() not in available_providers:
+                self.selected_provider.set(available_providers[0])
+            self._on_provider_change()
 
-    # --- NEW: Helper to populate final valuation inputs ---
-    def _populate_final_val_inputs(self):
-        """Populates final valuation inputs from valuation tab output."""
-        try:
-            val_text = self.valuation_output.get(1.0, tk.END) # Get text from valuation output widget
-            price = dcf = rel = None
-            for line in val_text.split('\n'):
-                if "Current Stock Price:" in line: price = line.split('$')[-1].strip()
-                elif "DCF Intrinsic Value per Share:" in line: dcf = line.split('$')[-1].strip()
-                elif "Average Valuation:" in line: rel = line.split('$')[-1].strip() # Check if Average Val is outputted
-
-            # Update final tab widgets
-            if price and 'current_price' in self.final_val_entries: self.final_val_entries['current_price'].delete(0,tk.END); self.final_val_entries['current_price'].insert(0, price)
-            if dcf and 'dcf_value' in self.final_val_entries: self.final_val_entries['dcf_value'].delete(0,tk.END); self.final_val_entries['dcf_value'].insert(0, dcf)
-            if rel and 'relative_value' in self.final_val_entries: self.final_val_entries['relative_value'].delete(0,tk.END); self.final_val_entries['relative_value'].insert(0, rel)
-            messagebox.showinfo("Populate", "Valuation fields populated.")
-        except Exception as e: messagebox.showwarning("Populate Error", f"Could not parse values: {e}")
-
-    # --- END NEW HELPERS ---
+    def _on_provider_change(self):
+        """Update instructions when provider changes"""
+        provider = self.selected_provider.get()
+        
+        if provider == "gemini":
+            self.instruction_label.config(
+                text="Get free Gemini API key at: https://makersuite.google.com/app/apikey"
+            )
+        else:  # openai
+            self.instruction_label.config(
+                text="Get OpenAI API key at: https://platform.openai.com/api-keys"
+            )
+        
+        # Reset status if provider changed
+        if self.comprehensive_analyzer:
+            self.api_status_label.config(text="● Provider changed - please reset API key", foreground="orange")
+            self.comprehensive_analyzer = None
 
     def set_api_key(self):
-        # ... (API key logic - kept as is) ...
-        self._update_provider_availability() # Ensure AI button state is correct
+        """Set the AI API key for comprehensive analyzer"""
+        if not COMPREHENSIVE_ANALYZER_AVAILABLE:
+            messagebox.showerror("Package Not Installed", "Comprehensive analyzer package is not installed.")
+            return
+        
+        provider = self.selected_provider.get()
+        
+        if not is_provider_available(provider):
+            package_name = "google-generativeai" if provider == "gemini" else "openai"
+            messagebox.showerror("Package Not Installed", f"The {package_name} package is not installed.")
+            return
+            
+        api_key = self.api_key_entry.get().strip()
+        if not api_key:
+            messagebox.showerror("Error", "Please enter a valid API key.")
+            return
+        
+        try:
+            # This is the only analyzer we instantiate now
+            self.comprehensive_analyzer = ComprehensiveStockAnalyzer(api_key, provider=provider)
+            self.api_status_label.config(text=f"● Connected ({provider.upper()})", foreground="green")
+            
+            provider_name = "Google Gemini" if provider == "gemini" else "OpenAI ChatGPT"
+            messagebox.showinfo("Success", f"{provider_name} API key set successfully!")
+        except Exception as e:
+            self.api_status_label.config(text="● Error", foreground="red")
+            messagebox.showerror("Error", f"Failed to initialize {provider.upper()} API:\n\n{str(e)}")
 
     def run_analysis(self):
-        # ... (Basic analysis logic - kept as is) ...
-        # --- Clear relevant UI elements ---
-        self.ai_guidance_status.config(text="Status: Idle", foreground='black')
-        # ... (Clear guidance AI widgets) ...
-        self.comprehensive_report_text.config(state="normal"); self.comprehensive_report_text.delete(1.0, tk.END); self.comprehensive_report_text.insert(tk.END, "Run analysis, use Guidance tab, then calculate."); self.comprehensive_report_text.config(state="disabled")
-        self._pushed_scores_temp = {}
-        # ... (Clear final input fields if desired, or leave populated) ...
-        try:
-             # ... (Fetch data) ...
-             # ... (Populate basic tabs) ...
-             # ... (Initialize evaluator if needed) ...
-            messagebox.showinfo("Success", "Basic analysis complete.")
-        except Exception as e: messagebox.showerror("Error", f"Analysis failed: {e}")
+        """Main function to fetch data and populate all tabs"""
+        main_ticker = self.main_ticker_entry.get().strip().upper()
+        competitors_input = self.competitors_entry.get().strip().upper()
+        competitor_tickers = [t.strip() for t in competitors_input.split(',') if t.strip()]
+        
+        if not main_ticker:
+            messagebox.showerror("Error", "Please enter a main stock ticker.")
+            return
 
-
-    def _load_ai_guidance(self):
-        # ... (Load AI Guidance logic - kept as is, uses threading) ...
-        pass
-
-    def _fetch_guidance_thread(self, ticker):
-        # ... (Worker thread logic - kept as is) ...
-        pass
-
-    def _update_guidance_ui_error(self, error_msg):
-        # ... (Update UI on error - kept as is) ...
-        pass
-
-    def _update_guidance_ui_success(self, guidance_results):
-        # ... (Update UI on success - kept as is) ...
-        pass
-
-    def _push_qualitative_scores(self):
-        # ... (Push Scores logic - stores to self._pushed_scores_temp - kept as is) ...
-        pass
-
-    # --- UPDATED FINAL CALCULATION METHOD ---
-    def _calculate_final_comprehensive_score(self):
-        """Calculates the final score using evaluator methods, USER INPUTS, and pushed scores."""
-        if not self.stock_evaluator_instance: messagebox.showerror("Error", "Evaluator not initialized."); return
-        if not hasattr(self, '_pushed_scores_temp') or not self._pushed_scores_temp: messagebox.showerror("Error", "Push scores from Guidance tab first."); return
-        main_ticker = self.main_ticker_entry.get().strip().upper();
-        if not main_ticker: return
-
-        # Re-initialize evaluator if ticker changed
-        if self.stock_evaluator_instance.ticker != main_ticker or not self.stock_evaluator_instance.info:
-            messagebox.showinfo("Info", f"Re-initializing evaluator for {main_ticker}...")
-            self.set_api_key() # Re-init with current ticker and API key
-            if not self.stock_evaluator_instance: return # Stop if re-init failed
-
-        self.comprehensive_report_text.config(state="normal"); self.comprehensive_report_text.delete(1.0, tk.END)
-        self.comprehensive_report_text.insert(tk.END, f"🧮 Calculating for {main_ticker} using inputs & stored scores...\n\n"); self.root.update_idletasks()
+        # Clear old suggestion data
+        for sugg_dict in [self.quant_suggestions, self.ops_suggestions]:
+            for label in sugg_dict.values():
+                label.config(text="Yahoo: N/A")
+        for cat_dict in self.qual_suggestions.values():
+            for label in cat_dict.values():
+                label.config(text="AI Suggestion: N/A")
+        self.comprehensive_text.delete(1.0, tk.END)
 
         try:
-            evaluator = self.stock_evaluator_instance
-            current_data = self.fetched_data.get(main_ticker, {}) # Use already fetched data
+            all_tickers = [main_ticker] + competitor_tickers
+            self.fetched_data.clear()
+            
+            for ticker in all_tickers:
+                self.root.update_idletasks()
+                data = self._fetch_and_process_single_stock(ticker)
+                if data and data['info']:
+                    self.fetched_data[ticker] = data
+                else:
+                    messagebox.showwarning("Data Error", f"Could not fetch complete data for {ticker}")
 
-            # --- Gather USER INPUTS from final tab widgets ---
-            user_quant_metrics = {}
-            user_industry_avgs = {}
-            user_val_inputs = {}
-            user_ops_scores = {}
+            if main_ticker not in self.fetched_data:
+                messagebox.showerror("Error", f"Failed to fetch data for main ticker {main_ticker}")
+                return
 
-            # Helper to safely get float/int/bool from Entry/BooleanVar
-            def get_widget_val(widget, dtype=float):
-                try:
-                    if isinstance(widget, tk.BooleanVar): return widget.get()
-                    val_str = widget.get().strip()
-                    if not val_str: return 0.0 if dtype == float else 0 # Default for empty
-                    return dtype(val_str)
-                except (ValueError, tk.TclError): # Handle invalid input or missing widget
-                    return 0.0 if dtype == float else 0
+            # Populate tabs
+            self._plot_data(main_ticker, competitor_tickers)
+            self._display_financials(main_ticker)
+            self._calculate_and_display_valuation(main_ticker, competitor_tickers)
+            
+            messagebox.showinfo("Success", "Basic analysis complete. Data loaded into tabs.")
 
-            # Gather Quant
-            for key, widget in self.final_quant_entries.items():
-                user_quant_metrics[key] = get_widget_val(widget, dtype=bool if key=='margin_expanding' else float)
-            for key, widget in self.final_quant_industry_entries.items():
-                user_industry_avgs[key] = get_widget_val(widget, dtype=float)
+        except Exception as e:
+            messagebox.showerror("Error", f"An error occurred during analysis: {e}")
 
-            # Gather Valuation
-            for key, widget in self.final_val_entries.items():
-                user_val_inputs[key] = get_widget_val(widget, dtype=float)
+    def _load_suggestions(self):
+        """Loads suggestions for the comprehensive tab"""
+        main_ticker = self.main_ticker_entry.get().strip().upper()
+        if not main_ticker:
+            messagebox.showerror("Error", "Please enter a main ticker.")
+            return
 
-            # Gather Operational
-            for key, widget in self.final_ops_entries.items():
-                user_ops_scores[key] = get_widget_val(widget, dtype=int) # Scores are int 1-10
+        self.comprehensive_text.delete(1.0, tk.END)
+        self.comprehensive_text.insert(tk.END, f"🚀 Loading suggestions for {main_ticker}...\n")
+        self.root.update_idletasks()
 
-            # --- Call internal scoring methods WITH USER INPUTS ---
-            # Quantitative (Pass user inputs and industry averages)
-            # Need to merge user metrics into a dict evaluator might expect
-            eval_quant_input = current_data.copy()
-            eval_quant_input.update(user_quant_metrics)
-            quant_result = evaluator._calculate_quantitative_score(eval_quant_input, user_industry_avgs) # Pass industry avg dict
+        if not self.comprehensive_analyzer:
+            self.comprehensive_analyzer = ComprehensiveStockAnalyzer() # Init without AI
 
-            # Qualitative (Use PUSHED SCORES)
-            qual_scores_cat = {cat: {q['key']: self._pushed_scores_temp.get(q['key'], 5) for q in qs} for cat, qs in QUALITATIVE_QUESTIONS_GUIDANCE.items()}
-            qual_result = evaluator._calculate_qualitative_score(qual_scores_cat)
+        # 1. Fetch Yahoo Finance Suggestions
+        try:
+            sugg_data = self.comprehensive_analyzer.get_suggestion_data(main_ticker)
+            if 'error' in sugg_data:
+                raise Exception(sugg_data['error'])
+            
+            # Populate Quant suggestions
+            for key, label in self.quant_suggestions.items():
+                val = sugg_data.get(key)
+                if val is not None:
+                    label.config(text=f"Yahoo: {val:.4f}")
+                else:
+                    label.config(text="Yahoo: N/A")
+            
+            # Populate Ops suggestions
+            vol = sugg_data.get('volume', 0)
+            spread = sugg_data.get('bid_ask_spread_pct', 1.0)
+            self.ops_suggestions['liquidity'].config(text=f"Yahoo: Vol={vol or 0:,.0f}, Spread={spread or 0:.3%}")
+            
+            yld = sugg_data.get('forward_dividend_yield', 0)
+            self.ops_suggestions['dividend'].config(text=f"Yahoo: Fwd Yield={yld or 0:.2%}")
+            
+            self.comprehensive_text.insert(tk.END, f"✅ Yahoo Finance suggestions loaded.\n")
+        except Exception as e:
+            self.comprehensive_text.insert(tk.END, f"❌ Error loading Yahoo data: {e}\n")
+            
+        self.root.update_idletasks()
 
-            # Valuation (Pass user inputs)
-            eval_val_input = current_data.copy() # Start with base data
-            eval_val_input.update(user_val_inputs) # Add user inputs
-            val_result = evaluator._calculate_valuation_score(eval_val_input)
+        # 2. Fetch AI Suggestions
+        if self.comprehensive_analyzer and self.comprehensive_analyzer.use_ai:
+            try:
+                self.comprehensive_text.insert(tk.END, f"🤖 Requesting AI suggestions... (this may take a moment)\n")
+                self.root.update_idletasks()
+                
+                ai_suggs = self.comprehensive_analyzer.get_ai_suggestions(main_ticker)
+                if 'error' in ai_suggs:
+                    raise Exception(ai_suggs['error'])
+                
+                for category, questions in self.qual_suggestions.items():
+                    for q_key, label in questions.items():
+                        sugg = ai_suggs.get(q_key, "AI suggestion not found.")
+                        label.config(text=f"AI: {sugg}")
 
-            # Operational (Pass user inputs)
-            eval_ops_input = current_data.copy()
-            eval_ops_input['user_tax_score'] = user_ops_scores.get('tax', 5) # Update from user input
-            eval_ops_input['user_portfolio_fit_score'] = user_ops_scores.get('portfolio_fit', 5)
-            # Include liquidity/dividend user scores if the method uses them
-            eval_ops_input['user_liquidity_score'] = user_ops_scores.get('liquidity', 5)
-            eval_ops_input['user_dividend_score'] = user_ops_scores.get('dividend', 5)
-            ops_result = evaluator._calculate_operational_score(eval_ops_input)
+                self.comprehensive_text.insert(tk.END, f"✅ AI suggestions loaded.\n")
+            except Exception as e:
+                self.comprehensive_text.insert(tk.END, f"❌ Error loading AI data: {e}\n")
+        else:
+            self.comprehensive_text.insert(tk.END, f"ℹ️ AI not configured. Skipping AI suggestions.\n")
 
-            # Credits (Pass necessary data and results)
-            # Combine data for credits check
-            credits_input_data = current_data.copy()
-            credits_input_data.update(user_quant_metrics)
-            credits_input_data.update(user_val_inputs)
-            credits_result = evaluator._calculate_justification_credits(
-                 quant_result.get('scores',{}), qual_result.get('categories',{}),
-                 val_result.get('scores',{}), ops_result.get('scores',{}),
-                 credits_input_data # Pass combined data
-            )
-            # Final Score
-            final_result_data = evaluator._calculate_final_score_and_recommendation(
-                 quant_result.get('total_score', 0), qual_result.get('normalized_score', 0),
-                 val_result.get('total_score', 0), ops_result.get('total_score', 0),
-                 credits_result.get('total_credits', 0)
-            )
-            # Report
-            report = evaluator._generate_report(quant_result, qual_result, val_result, ops_result, credits_result, final_result_data, credits_input_data)
+    def _calculate_comprehensive_score(self):
+        """Gathers all user inputs and calculates the final score"""
+        if not self.comprehensive_analyzer:
+            messagebox.showerror("Error", "Analyzer not initialized. Try setting API key or loading suggestions.")
+            return
 
-            # --- Display Results ---
-            self.comprehensive_report_text.delete(1.0, tk.END); self.comprehensive_report_text.insert(tk.END, report); self.comprehensive_report_text.config(state="disabled")
-            messagebox.showinfo("Success", "Final evaluation complete!")
+        main_ticker = self.main_ticker_entry.get().strip().upper()
+        if not main_ticker:
+            messagebox.showerror("Error", "Please enter a main ticker.")
+            return
 
-        except AttributeError as ae: error_msg = f"Calc Error: Method missing? {ae}"; print(traceback.format_exc())
-        except Exception as e: error_msg = f"Calculation Error: {e}"; print(traceback.format_exc())
-        if 'error_msg' in locals():
-             self.comprehensive_report_text.delete(1.0, tk.END); self.comprehensive_report_text.insert(tk.END, f"❌ ERROR:\n\n{error_msg}"); self.comprehensive_report_text.config(state="disabled")
-             messagebox.showerror("Error", error_msg)
+        user_inputs = {
+            'quant_metrics': {}, 'qual_scores': {}, 'val_inputs': {},
+            'ops_scores': {}, 'industry_avgs': {}
+        }
 
+        try:
+            # Helper to safely get float from entry
+            def get_float(entry_widget):
+                val_str = entry_widget.get().strip()
+                if not val_str: return 0.0
+                return float(val_str)
+            
+            def get_int(entry_widget):
+                val_str = entry_widget.get().strip()
+                if not val_str: return 0
+                return int(val_str)
 
-    # --- KEPT ORIGINAL HELPER/DISPLAY FUNCTIONS ---
+            # 1. Gather Quant Metrics
+            for key, entry in self.quant_entries.items():
+                if key == 'margin_expanding':
+                    user_inputs['quant_metrics'][key] = entry.get()
+                else:
+                    user_inputs['quant_metrics'][key] = get_float(entry)
+            
+            for key, entry in self.quant_industry_entries.items():
+                user_inputs['industry_avgs'][key] = get_float(entry)
+
+            # 2. Gather Qual Scores
+            for category, questions in self.qual_entries.items():
+                user_inputs['qual_scores'][category] = {}
+                for q_key, entry in questions.items():
+                    user_inputs['qual_scores'][category][q_key] = get_int(entry) # Scores are 1-10
+
+            # 3. Gather Val Inputs
+            for key, entry in self.val_entries.items():
+                user_inputs['val_inputs'][key] = get_float(entry)
+                
+            # 4. Gather Ops Scores
+            for key, entry in self.ops_entries.items():
+                user_inputs['ops_scores'][key] = get_int(entry) # Scores are 1-10
+
+        except ValueError as e:
+            messagebox.showerror("Input Error", f"Invalid number entered. Please check all fields.\n{e}")
+            return
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to gather inputs: {e}")
+            return
+
+        # Run final calculation
+        self.comprehensive_text.delete(1.0, tk.END)
+        self.comprehensive_text.insert(tk.END, f"🧮 Calculating final score for {main_ticker}...\n\n")
+        self.root.update_idletasks()
+
+        try:
+            # Need suggestion data for calculation
+            sugg_data = self.comprehensive_analyzer.get_suggestion_data(main_ticker)
+            if 'error' in sugg_data:
+                raise Exception(f"Failed to get suggestion data for calculation: {sugg_data['error']}")
+            
+            result = self.comprehensive_analyzer.run_final_evaluation(user_inputs, sugg_data)
+            
+            if result['success']:
+                self.comprehensive_text.delete(1.0, tk.END)
+                self.comprehensive_text.insert(tk.END, result['report'])
+                messagebox.showinfo("Success", "Comprehensive evaluation completed successfully!")
+            else:
+                self.comprehensive_text.delete(1.0, tk.END)
+                self.comprehensive_text.insert(tk.END, f"❌ ERROR\n\n{result.get('error')}")
+                messagebox.showerror("Error", f"Evaluation failed: {result.get('error')}")
+
+        except Exception as e:
+            import traceback
+            self.comprehensive_text.delete(1.0, tk.END)
+            self.comprehensive_text.insert(tk.END, f"❌ UNEXPECTED ERROR\n\n{str(e)}\n{traceback.format_exc()}")
+            messagebox.showerror("Error", f"An error occurred: {str(e)}")
+
+    # --- KEPT ORIGINAL FUNCTIONS ---
+
     def _fetch_and_process_single_stock(self, ticker):
-        # ... (Keep original implementation) ...
-        pass
+        """Fetches and processes data for a single stock (from original file)"""
+        data = {
+            'info': self.fetcher.get_company_info(ticker),
+            'history': self.fetcher.get_stock_history(ticker, period="5y"),
+            'financials': self.fetcher.get_financials(ticker)
+        }
+        if data['info']:
+            data['processed_history'] = self.processor.calculate_technical_indicators(data['history'])
+            data['annual_cash_flow'] = self.processor.get_yearly_financial_data(data['financials'], 'cash_flow')
+            data['annual_balance'] = self.processor.get_yearly_financial_data(data['financials'], 'balance_sheet')
+            data['annual_income'] = self.processor.get_yearly_financial_data(data['financials'], 'income_stmt')
+            data['fcf'] = self.processor.calculate_free_cash_flow(data['annual_cash_flow'])
+            data['total_debt'] = self.processor.get_total_debt(data['annual_balance'])
+            data['cash_equivalents'] = self.processor.get_cash_and_equivalents(data['annual_balance'])
+            data['total_equity'] = self.processor.get_total_stockholder_equity(data['annual_balance'])
+            data['eps_history'] = self.processor.get_eps_from_financials(data['annual_income'])
+            data['ebitda'] = self.processor.get_ebitda(data['annual_income'])
+        return data
+
     def _plot_data(self, main_ticker, competitor_tickers):
-        # ... (Keep original implementation) ...
-        pass
+        """Plots stock comparison chart (from original file)"""
+        plot_dfs = {}
+        if main_ticker in self.fetched_data:
+            plot_dfs[main_ticker] = self.fetched_data[main_ticker]['processed_history']
+        for ticker in competitor_tickers:
+            if ticker in self.fetched_data:
+                plot_dfs[ticker] = self.fetched_data[ticker]['processed_history']
+        self.visualizer.plot_multi_stock_comparison(plot_dfs, title="Closing Price Comparison (5 Years)")
+
     def _display_financials(self, main_ticker):
-         # ... (Keep original implementation) ...
-         pass
+        """Displays financial statements (from original file)"""
+        self.financials_text.delete(1.0, tk.END)
+        data = self.fetched_data[main_ticker]
+        self.financials_text.insert(tk.END, f"--- {main_ticker} Key Financial Data ---\n\n")
+        for key in ['income_stmt', 'balance_sheet', 'cash_flow']:
+            self.financials_text.insert(tk.END, f"--- {key.replace('_', ' ').title()} ---\n")
+            df = data['financials'].get(key)
+            if df is not None and not df.empty:
+                self.financials_text.insert(tk.END, df.to_string() + "\n\n")
+            else:
+                self.financials_text.insert(tk.END, "Data not available\n\n")
+
     def _calculate_and_display_valuation(self, main_ticker, competitor_tickers):
-         # ... (Keep original implementation) ...
-         pass
-    # --- END KEPT FUNCTIONS ---
+        """Calculates and displays DCF and Relative Valuation (from original file)"""
+        self.valuation_output.delete(1.0, tk.END)
+        main_data = self.fetched_data[main_ticker]
+        output = f"--- {main_ticker} Valuation Analysis ---\n\n"
+
+        # --- DCF Valuation ---
+        output += "### 1. Discounted Cash Flow (DCF) Valuation ###\n"
+        dcf_value = None # To pass to auto-populator
+        try:
+            beta = main_data['info'].get('beta')
+            market_cap = main_data['info'].get('marketCap')
+            shares_outstanding = main_data['info'].get('sharesOutstanding')
+            current_fcf = main_data['fcf'].iloc[-1] if not main_data['fcf'].empty else None
+            total_debt = main_data['total_debt'].iloc[-1] if not main_data['total_debt'].empty else None
+            cash_equivalents = main_data['cash_equivalents'].iloc[-1] if not main_data['cash_equivalents'].empty else None
+            required_data_map = {'Beta Value': beta, 'Market Cap': market_cap, 'Shares Outstanding': shares_outstanding,
+                                 'Latest Free Cash Flow': current_fcf, 'Total Debt': total_debt, 'Cash & Equivalents': cash_equivalents}
+            missing_items = [name for name, value in required_data_map.items() if value is None]
+            
+            if not missing_items:
+                if len(main_data['fcf']) > 1:
+                    hist_growth = main_data['fcf'].pct_change().mean()
+                    growth_rates_high = [max(min(hist_growth * (1 - 0.1 * i), 0.3), 0.05) for i in range(5)]
+                else:
+                    growth_rates_high = [0.15, 0.12, 0.10, 0.08, 0.05]
+                terminal_growth_rate = 0.025
+                cost_of_debt = 0.055
+                cost_of_equity = self.valuation_model.calculate_cost_of_equity(beta)
+                wacc = self.valuation_model.calculate_wacc(market_cap, total_debt, cost_of_equity, cost_of_debt)
+                output += f"  - WACC Calculation Parameters: Beta={beta:.2f}, Cost of Equity={cost_of_equity:.2%}, WACC={wacc:.2%}\n"
+                output += f"  - FCF Growth Assumptions (5 years): {[f'{g:.2%}' for g in growth_rates_high]}\n"
+                
+                dcf_value = self.valuation_model.dcf_valuation(current_fcf, growth_rates_high, terminal_growth_rate,
+                                                               wacc, shares_outstanding, total_debt, cash_equivalents)
+                
+                output += f"  >>> DCF Intrinsic Value per Share: ${dcf_value:.2f}\n"
+            else:
+                output += f"  - Insufficient key data for DCF valuation.\n"
+                output += f"  - Missing Items: {', '.join(missing_items)}\n"
+        except Exception as e:
+            output += f"  - DCF valuation calculation error: {e}\n"
+
+        # --- Relative Valuation ---
+        output += "\n### 2. Relative Valuation ###\n"
+        avg_valuation = None # To pass to auto-populator
+        try:
+            pe_list, ps_list, pb_list, ev_ebitda_list = [], [], [], []
+            
+            for ticker in competitor_tickers:
+                if ticker in self.fetched_data:
+                    info = self.fetched_data[ticker]['info']
+                    comp_data = self.fetched_data[ticker]
+                    
+                    if info.get('trailingPE'): pe_list.append(info['trailingPE'])
+                    if info.get('priceToSalesTrailing12Months'): ps_list.append(info['priceToSalesTrailing12Months'])
+                    if info.get('priceToBook'): pb_list.append(info['priceToBook'])
+                    
+                    comp_market_cap = info.get('marketCap')
+                    comp_total_debt = comp_data['total_debt'].iloc[-1] if not comp_data['total_debt'].empty else None
+                    comp_cash = comp_data['cash_equivalents'].iloc[-1] if not comp_data['cash_equivalents'].empty else None
+                    comp_ebitda = comp_data['ebitda'].iloc[-1] if not comp_data['ebitda'].empty else None
+                    
+                    if all([comp_market_cap, comp_total_debt is not None, comp_cash is not None, 
+                           comp_ebitda is not None, comp_ebitda > 0]):
+                        comp_ev = comp_market_cap + comp_total_debt - comp_cash
+                        comp_ev_ebitda = comp_ev / comp_ebitda
+                        ev_ebitda_list.append(comp_ev_ebitda)
+            
+            avg_pe = np.mean(pe_list) if pe_list else None
+            avg_ps = np.mean(ps_list) if ps_list else None
+            avg_pb = np.mean(pb_list) if pb_list else None
+            avg_ev_ebitda = np.mean(ev_ebitda_list) if ev_ebitda_list else None
+            
+            output += f"  - Competitor Average Multiples:\n"
+            output += f"      P/E={avg_pe or 'N/A':.2f}, P/S={avg_ps or 'N/A':.2f}, P/B={avg_pb or 'N/A':.2f}, EV/EBITDA={avg_ev_ebitda or 'N/A':.2f}\n"
+            
+            target_eps = main_data['info'].get('trailingEps')
+            total_revenue = main_data['annual_income'].loc['Total Revenue'].iloc[-1] if 'Total Revenue' in main_data['annual_income'].index else None
+            total_equity = main_data['total_equity'].iloc[-1] if not main_data['total_equity'].empty else None
+            shares_outstanding = main_data['info'].get('sharesOutstanding')
+            target_ebitda = main_data['ebitda'].iloc[-1] if not main_data['ebitda'].empty else None
+            total_debt = main_data['total_debt'].iloc[-1] if not main_data['total_debt'].empty else None
+            cash_equivalents = main_data['cash_equivalents'].iloc[-1] if not main_data['cash_equivalents'].empty else None
+            
+            target_sps = total_revenue / shares_outstanding if total_revenue and shares_outstanding else None
+            target_bps = total_equity / shares_outstanding if total_equity and shares_outstanding else None
+            
+            relative_values = self.valuation_model.relative_valuation(
+                target_eps, target_sps, target_bps, avg_pe, avg_ps, avg_pb
+            )
+            
+            if avg_ev_ebitda and target_ebitda and total_debt is not None and cash_equivalents is not None:
+                ev_ebitda_value = self.valuation_model.ev_ebitda_valuation(
+                    target_ebitda, avg_ev_ebitda, total_debt, cash_equivalents, shares_outstanding
+                )
+                if ev_ebitda_value:
+                    relative_values['EV/EBITDA Multiple'] = ev_ebitda_value
+            
+            if not relative_values:
+                output += "  - Insufficient key data for relative valuation.\n"
+            else:
+                output += "\n  Relative Valuation Results:\n"
+                for method, value in relative_values.items(): 
+                    output += f"  >>> Valuation based on {method}: ${value:.2f}\n"
+                
+                avg_valuation = np.mean(list(relative_values.values()))
+                output += f"\n  >>> Average Valuation: ${avg_valuation:.2f}\n"
+                
+        except Exception as e:
+            output += f"  - Relative valuation calculation error: {e}\n"
+
+        current_price = main_data['history']['Close'].iloc[-1]
+        output += f"\n### Current Market Price ###\n  - {main_ticker} Current Stock Price: ${current_price:.2f}\n"
+        self.valuation_output.insert(tk.END, output)
 
 if __name__ == "__main__":
-    root = tk.Tk(); style = ttk.Style(root)
-    try: # Apply theme
-        if "aqua" in style.theme_names(): style.theme_use("aqua")
-        elif "vista" in style.theme_names(): style.theme_use("vista")
-        else: style.theme_use('clam')
-    except tk.TclError: style.theme_use('clam')
-    app = StockAnalysisApp(root); root.mainloop()
+    root = tk.Tk()
+    app = StockAnalysisApp(root)
+    root.mainloop()
