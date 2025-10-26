@@ -59,7 +59,6 @@ class StockDataProcessor:
         if balance_sheet_df.empty: return pd.Series(dtype=float)
 
         # Method 1: Prioritize direct search for total debt items
-        # Based on the debug list you provided, we've added exact names
         possible_keys = ['Total Liab', 'Total Liabilities', 'Total Liabilities Net Minority Interest', 'Total Debt']
         for key in possible_keys:
             if key in balance_sheet_df.index:
@@ -67,7 +66,6 @@ class StockDataProcessor:
                 return balance_sheet_df.loc[key].sort_index(ascending=True)
 
         # Method 2: If direct items don't exist, calculate by summing components
-        # Based on your debug list, we use exact component names
         current_liab_keys = ['Total Current Liabilities', 'Current Liabilities']
         non_current_liab_keys = ['Total Non Current Liabilities', 'Total Non Current Liabilities Net Minority Interest']
 
@@ -78,13 +76,10 @@ class StockDataProcessor:
                 break
 
         non_current_liab_key_found = None
-        # --- Bug fix section ---
         for key in non_current_liab_keys:
-            # Fixed logic error here, previously was checking key in non_current_liab_keys
             if key in balance_sheet_df.index:
                 non_current_liab_key_found = key
                 break
-        # --- End of bug fix ---
 
         if current_liab_key_found and non_current_liab_key_found:
             print(
@@ -122,9 +117,40 @@ class StockDataProcessor:
         if annual_income_stmt.empty:
             return pd.Series(dtype=float)
         
-        # EBITDA should be directly available in the income statement
         if 'EBITDA' in annual_income_stmt.index:
             return annual_income_stmt.loc['EBITDA'].sort_index(ascending=True)
         else:
-            # Return empty series if not available
             return pd.Series(dtype=float)
+
+    # --- NEW FUNCTION FOR ETF ---
+    def get_etf_metrics(self, info_dict: dict) -> dict:
+        """Extracts key metrics for an ETF from its info dictionary."""
+        if not info_dict:
+            return {}
+        
+        # Helper to safely convert to float
+        def safe_float(key):
+            val = info_dict.get(key)
+            return float(val) if isinstance(val, (int, float)) else 0.0
+
+        metrics = {
+            'beta': safe_float('beta3Year'), # Use 3-year beta [cite: 14]
+            'sharpe_ratio': safe_float('sharpeRatio'), # Not in PDF, but good metric
+            'expense_ratio': safe_float('expenseRatio'),
+            'nav_price': safe_float('navPrice'),
+            'current_price': info_dict.get('currentPrice', safe_float('previousClose')),
+            'forward_pe': safe_float('forwardPE'),
+            'dividend_yield': safe_float('yield'),
+            'turnover': safe_float('turnover'),
+            'total_assets': safe_float('totalAssets')
+        }
+        
+        # Try to get 10-year annualized return if available
+        perf = info_dict.get('performanceOverview', {})
+        if perf and 'asOfDate' in perf and '10y' in perf:
+             metrics['annualized_return_10y'] = safe_float(perf['10y'])
+        else:
+             # Fallback to 5y
+             metrics['annualized_return_10y'] = safe_float(info_dict.get('fiveYearAverageReturn'))
+
+        return metrics
