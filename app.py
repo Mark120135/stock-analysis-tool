@@ -639,7 +639,7 @@ def calculate_and_display_valuation(main_ticker, competitor_tickers, fetched_dat
 
 # --- MAIN APP ---
 def main():
-    st.markdown('<p class="main-header">📊 Stock & ETF Analysis Platform</p>', unsafe_allow_html=True)
+    st.markdown(f'<p class="main-header">📊 EMPATHY: Stock & ETF Analysis Platform</p>', unsafe_allow_html=True)
     st.markdown('<p class="sub-header">Comprehensive evaluation with AI suggestions</p>', unsafe_allow_html=True)
     fetcher, processor, valuation_model = init_components()
 
