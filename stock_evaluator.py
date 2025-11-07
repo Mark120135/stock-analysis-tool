@@ -793,9 +793,9 @@ class StockEvaluator:
         if dcf_value > 0 and current_price > 0:
             dcf_upside = (dcf_value - current_price) / current_price
             
-            # === YOUR REQUESTED DCF RANGE ===
-            DCF_MIN_UPSIDE = -0.50  # -50% (Score 1)
-            DCF_MAX_UPSIDE = 0.50   # +50% (Score 10)
+            # === YOUR NEW DCF RANGE ===
+            DCF_MIN_UPSIDE = -0.30  # -30% (Score 1)
+            DCF_MAX_UPSIDE = 0.30   # +30% (Score 10)
             
             scores['dcf'] = self._scale_score(
                 dcf_upside, 
@@ -811,9 +811,9 @@ class StockEvaluator:
         if relative_value > 0 and current_price > 0:
             rel_upside = (relative_value - current_price) / current_price
             
-            # === YOUR NEW REQUESTED RELATIVE RANGE ===
-            REL_MIN_UPSIDE = -0.50  # -50% (Score 1)
-            REL_MAX_UPSIDE = 0.50   # +50% (Score 10)
+            # === YOUR NEW RELATIVE RANGE ===
+            REL_MIN_UPSIDE = -0.30  # -30% (Score 1)
+            REL_MAX_UPSIDE = 0.30   # +30% (Score 10)
 
             scores['relative'] = self._scale_score(
                 rel_upside, 
@@ -832,35 +832,6 @@ class StockEvaluator:
             'total_score': total_score,
             'scores': scores,
             'explanations': exps
-        }
-
-    def _calculate_operational_score(self, data: Dict) -> Dict:
-        """Calculates operational & practical factors score (1-10)."""
-        # Get user scores from the data dict
-        tax_score = data.get('user_tax_score', 5) # Assume 5 if not provided
-        fit_score = data.get('user_portfolio_fit_score', 5) # Assume 5 if not provided
-        liquidity_score = data.get('user_liquidity_score', 5) # Get user score
-        div_score = data.get('user_dividend_score', 5) # Get user score
-
-        scores = {
-            'liquidity': liquidity_score,
-            'tax': tax_score,
-            'dividend': div_score,
-            'portfolio_fit': fit_score
-        }
-        total_score = np.mean(list(scores.values()))
-
-        explanations = {
-            'liquidity': f"User Score -> {liquidity_score}",
-            'tax': f"User Score -> {tax_score}",
-            'dividend': f"User Score -> {div_score}",
-            'portfolio_fit': f"User Score -> {fit_score}"
-        }
-
-        return {
-            'total_score': total_score,
-            'scores': scores,
-            'explanations': explanations
         }
 
     def _calculate_justification_credits(self, quant_scores, qual_scores, val_scores, ops_scores, data) -> Dict:
