@@ -159,7 +159,33 @@ class StockEvaluator:
         else:
              print("ℹ️ No API key provided. AI features disabled.")
              self.use_ai = False
-
+    @staticmethod
+    def _scale_score(value, min_val, max_val, min_score=1, max_score=10):
+        """
+        Scales a value from one range to another, clamping it within the bounds.
+        
+        Example: Scale a DCF upside of 15% (0.15)
+        - min_val = -0.50 (for -50% upside)
+        - max_val = 0.50 (for +50% upside)
+        - This will map -50% to 1, +50% to 10, and 15% to 7.0
+        """
+        if value is None or not np.isfinite(value):
+            return min_score  # Return worst score if data is bad
+            
+        # 1. Clamp the value to be within the min/max bounds
+        clamped_val = max(min_val, min(value, max_val))
+        
+        # 2. Normalize the clamped value to a 0.0 - 1.0 range
+        # Avoid division by zero if min_val == max_val
+        if (max_val - min_val) == 0:
+            return min_score
+            
+        normalized_val = (clamped_val - min_val) / (max_val - min_val)
+        
+        # 3. Scale the normalized value to the desired score range (1-10)
+        score = min_score + (normalized_val * (max_score - min_score))
+        
+        return score
     # --- ADDED METHOD: get_ai_qualitative_guidance ---
     # --- START OF REPLACEMENT ---
     def get_ai_qualitative_guidance(self, ticker_override: Optional[str] = None) -> Dict:
@@ -755,31 +781,52 @@ class StockEvaluator:
 
 
     def _calculate_valuation_score(self, data: Dict) -> Dict:
-        """Calculates valuation score (1-10)."""
-        dcf_value = data.get('dcf_value', 0) # Use key from user input
-        relative_value = data.get('relative_value', 0) # Use key from user input
+        """Calculates valuation score (1-10) using continuous scaling."""
+        dcf_value = data.get('dcf_value', 0) 
+        relative_value = data.get('relative_value', 0) 
         current_price = data.get('current_price', self.history['Close'].iloc[-1] if self.history is not None and not self.history.empty else 0)
 
         scores = {}
         exps = {}
 
+        # --- 1. DCF Scoring ---
         if dcf_value > 0 and current_price > 0:
-            ratio_dcf = current_price / dcf_value
-            if ratio_dcf < 0.8: scores['dcf'] = 10
-            elif ratio_dcf <= 1.2: scores['dcf'] = 7
-            else: scores['dcf'] = 3
-            exps['dcf'] = f"DCF ({current_price:.2f}/{dcf_value:.2f}={ratio_dcf:.2f}) -> {scores['dcf']}"
-        else: scores['dcf'] = 0; exps['dcf'] = "DCF=N/A (User Input)"
+            dcf_upside = (dcf_value - current_price) / current_price
+            
+            # === YOUR REQUESTED RANGE ===
+            DCF_MIN_UPSIDE = -0.50  # -50% (Score 1)
+            DCF_MAX_UPSIDE = 0.50   # +50% (Score 10)
+            
+            scores['dcf'] = self._scale_score(
+                dcf_upside, 
+                DCF_MIN_UPSIDE, 
+                DCF_MAX_UPSIDE
+            )
+            exps['dcf'] = f"DCF Upside: {dcf_upside:.2%} -> Score: {scores['dcf']:.2f}"
+        else:
+            scores['dcf'] = 1.0  # Give bottom score if data is missing
+            exps['dcf'] = "DCF=N/A (User Input)"
 
+        # --- 2. Relative (Comparative) Scoring ---
         if relative_value > 0 and current_price > 0:
-            ratio_rel = current_price / relative_value
-            if ratio_rel < 0.8: scores['relative'] = 10
-            elif ratio_rel <= 1.2: scores['relative'] = 7
-            else: scores['relative'] = 3
-            exps['relative'] = f"Relative ({current_price:.2f}/{relative_value:.2f}={ratio_rel:.2f}) -> {scores['relative']}"
-        else: scores['relative'] = 0; exps['relative'] = "Relative=N/A (User Input)"
+            rel_upside = (relative_value - current_price) / current_price
+            
+            # === DEFAULT SCALED RANGE (You can change this) ===
+            REL_MIN_UPSIDE = -0.15  # -15% (Score 1)
+            REL_MAX_UPSIDE = 0.30   # +30% (Score 10)
 
-        total_score = np.mean(list(scores.values())) if scores else 0
+            scores['relative'] = self._scale_score(
+                rel_upside, 
+                REL_MIN_UPSIDE, 
+                REL_MAX_UPSIDE
+            )
+            exps['relative'] = f"Relative Upside: {rel_upside:.2%} -> Score: {scores['relative']:.2f}"
+        else:
+            scores['relative'] = 1.0 # Give bottom score if data is missing
+            exps['relative'] = "Relative=N/A (User Input)"
+
+        # --- 3. Final Score ---
+        total_score = np.mean(list(scores.values())) if scores else 1.0
 
         return {
             'total_score': total_score,
