@@ -793,7 +793,7 @@ class StockEvaluator:
         if dcf_value > 0 and current_price > 0:
             dcf_upside = (dcf_value - current_price) / current_price
             
-            # === YOUR REQUESTED RANGE ===
+            # === YOUR REQUESTED DCF RANGE ===
             DCF_MIN_UPSIDE = -0.50  # -50% (Score 1)
             DCF_MAX_UPSIDE = 0.50   # +50% (Score 10)
             
@@ -811,9 +811,9 @@ class StockEvaluator:
         if relative_value > 0 and current_price > 0:
             rel_upside = (relative_value - current_price) / current_price
             
-            # === DEFAULT SCALED RANGE (You can change this) ===
-            REL_MIN_UPSIDE = -0.15  # -15% (Score 1)
-            REL_MAX_UPSIDE = 0.30   # +30% (Score 10)
+            # === YOUR NEW REQUESTED RELATIVE RANGE ===
+            REL_MIN_UPSIDE = -0.50  # -50% (Score 1)
+            REL_MAX_UPSIDE = 0.50   # +50% (Score 10)
 
             scores['relative'] = self._scale_score(
                 rel_upside, 
