@@ -264,7 +264,7 @@ def display_stock_final_tab(main_ticker, evaluator):
          c1, c2 = st.columns(2)
          with c1:
               st.markdown("**Profitability**")
-              user_inputs_final['quant_metrics']['avg_margins'] = st.number_input("Net Margins", 0.0, format="%.4f", key=f"final_avg_margins_{main_ticker}")
+              user_inputs_final['quant_metrics']['avg_margins'] = st.number_input("Net Margin", 0.0, format="%.4f", key=f"final_avg_margins_{main_ticker}")
               user_inputs_final['quant_metrics']['roe'] = st.number_input("ROE", value=float(sugg('roe')), format="%.4f", help=f"Sugg: {sugg('roe'):.4f}", key=f"final_roe_{main_ticker}")
               user_inputs_final['quant_metrics']['roa'] = st.number_input("ROA", value=float(sugg('roa')), format="%.4f", help=f"Sugg: {sugg('roa'):.4f}", key=f"final_roa_{main_ticker}")
               st.markdown("**Solvency**")
